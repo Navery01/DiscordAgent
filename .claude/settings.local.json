@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(.venv/Scripts/python -c \"import anthropic; print\\(anthropic.__version__\\); print\\(dir\\(anthropic.AsyncAnthropic\\(\\)\\)\\)\")",
+      "Bash(.venv/Scripts/python -c ':*)",
+      "Bash(.venv/Scripts/python -c \"from src.discordagent.agent import SYSTEM_PROMPT; print\\('OK — prompt length:', len\\(SYSTEM_PROMPT\\), 'chars'\\)\")",
+      "Bash(docker build:*)"
+    ]
+  }
+}
