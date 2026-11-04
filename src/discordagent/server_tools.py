@@ -2,6 +2,9 @@
 
 import discord
 from typing import Optional
+import logging 
+log = logging.getLogger(__name__)
+
 
 VALID_PERMISSIONS = {
     "administrator",

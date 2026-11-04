@@ -416,7 +416,7 @@ class ServerSetupAgent:
 
             try:
                 response = await self.client.messages.create(
-                    model="claude-opus-4-6",
+                    model="claude-sonnet-5-5",
                     max_tokens=4096,
                     thinking={"type": "adaptive"},
                     system=SYSTEM_PROMPT,
@@ -501,7 +501,7 @@ class ServerSetupAgent:
 
             try:
                 response = await self.client.messages.create(
-                    model="claude-opus-4-6",
+                    model="claude-sonnet-5-5",
                     max_tokens=2048,
                     thinking={"type": "adaptive"},
                     system=TASK_SYSTEM_PROMPT,
