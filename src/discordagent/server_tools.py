@@ -1,7 +1,6 @@
 """Discord guild manipulation tools used by the AI agent."""
 
 import discord
-from typing import Optional
 
 VALID_PERMISSIONS = {
     "administrator",
@@ -42,10 +41,7 @@ def _parse_color(hex_str: str) -> discord.Color:
 async def get_server_info(guild: discord.Guild) -> dict:
     categories = []
     for cat in guild.categories:
-        channels = [
-            {"name": ch.name, "type": str(ch.type)}
-            for ch in cat.channels
-        ]
+        channels = [{"name": ch.name, "type": str(ch.type)} for ch in cat.channels]
         categories.append({"name": cat.name, "channels": channels})
 
     uncategorized = [
@@ -72,11 +68,16 @@ async def get_server_info(guild: discord.Guild) -> dict:
 async def create_category(
     guild: discord.Guild,
     name: str,
-    position: Optional[int] = None,
+    position: int | None = None,
 ) -> dict:
     existing = discord.utils.get(guild.categories, name=name)
     if existing:
-        return {"success": True, "id": existing.id, "name": existing.name, "note": "already exists"}
+        return {
+            "success": True,
+            "id": existing.id,
+            "name": existing.name,
+            "note": "already exists",
+        }
     try:
         kwargs = {"name": name}
         if position is not None:
@@ -90,14 +91,19 @@ async def create_category(
 async def create_text_channel(
     guild: discord.Guild,
     name: str,
-    category_name: Optional[str] = None,
-    topic: Optional[str] = None,
+    category_name: str | None = None,
+    topic: str | None = None,
     slowmode: int = 0,
     readonly_for_everyone: bool = False,
 ) -> dict:
     existing = discord.utils.get(guild.text_channels, name=name)
     if existing:
-        return {"success": True, "id": existing.id, "name": existing.name, "note": "already exists"}
+        return {
+            "success": True,
+            "id": existing.id,
+            "name": existing.name,
+            "note": "already exists",
+        }
     try:
         category = None
         if category_name:
@@ -105,7 +111,9 @@ async def create_text_channel(
 
         overwrites = {}
         if readonly_for_everyone:
-            overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False)
+            overwrites[guild.default_role] = discord.PermissionOverwrite(
+                send_messages=False
+            )
 
         channel = await guild.create_text_channel(
             name=name,
@@ -122,12 +130,17 @@ async def create_text_channel(
 async def create_voice_channel(
     guild: discord.Guild,
     name: str,
-    category_name: Optional[str] = None,
+    category_name: str | None = None,
     user_limit: int = 0,
 ) -> dict:
     existing = discord.utils.get(guild.voice_channels, name=name)
     if existing:
-        return {"success": True, "id": existing.id, "name": existing.name, "note": "already exists"}
+        return {
+            "success": True,
+            "id": existing.id,
+            "name": existing.name,
+            "note": "already exists",
+        }
     try:
         category = None
         if category_name:
@@ -146,14 +159,19 @@ async def create_voice_channel(
 async def create_role(
     guild: discord.Guild,
     name: str,
-    color_hex: Optional[str] = None,
+    color_hex: str | None = None,
     hoist: bool = True,
     mentionable: bool = False,
-    permissions: Optional[list] = None,
+    permissions: list | None = None,
 ) -> dict:
     existing = discord.utils.get(guild.roles, name=name)
     if existing:
-        return {"success": True, "id": existing.id, "name": existing.name, "note": "already exists"}
+        return {
+            "success": True,
+            "id": existing.id,
+            "name": existing.name,
+            "note": "already exists",
+        }
     try:
         kwargs = {"name": name, "hoist": hoist, "mentionable": mentionable}
         if color_hex:
@@ -171,23 +189,27 @@ async def set_channel_permissions(
     guild: discord.Guild,
     channel_name: str,
     role_name: str,
-    allow: Optional[list] = None,
-    deny: Optional[list] = None,
+    allow: list | None = None,
+    deny: list | None = None,
 ) -> dict:
     channel = discord.utils.get(guild.channels, name=channel_name)
     if not channel:
         return {"success": False, "error": f"Channel '{channel_name}' not found"}
 
-    role = guild.default_role if role_name == "@everyone" else discord.utils.get(guild.roles, name=role_name)
+    role = (
+        guild.default_role
+        if role_name == "@everyone"
+        else discord.utils.get(guild.roles, name=role_name)
+    )
     if not role:
         return {"success": False, "error": f"Role '{role_name}' not found"}
 
     try:
         overwrite = discord.PermissionOverwrite()
-        for perm in (allow or []):
+        for perm in allow or []:
             if perm in VALID_PERMISSIONS:
                 setattr(overwrite, perm, True)
-        for perm in (deny or []):
+        for perm in deny or []:
             if perm in VALID_PERMISSIONS:
                 setattr(overwrite, perm, False)
 
@@ -201,23 +223,27 @@ async def set_category_permissions(
     guild: discord.Guild,
     category_name: str,
     role_name: str,
-    allow: Optional[list] = None,
-    deny: Optional[list] = None,
+    allow: list | None = None,
+    deny: list | None = None,
 ) -> dict:
     category = discord.utils.get(guild.categories, name=category_name)
     if not category:
         return {"success": False, "error": f"Category '{category_name}' not found"}
 
-    role = guild.default_role if role_name == "@everyone" else discord.utils.get(guild.roles, name=role_name)
+    role = (
+        guild.default_role
+        if role_name == "@everyone"
+        else discord.utils.get(guild.roles, name=role_name)
+    )
     if not role:
         return {"success": False, "error": f"Role '{role_name}' not found"}
 
     try:
         overwrite = discord.PermissionOverwrite()
-        for perm in (allow or []):
+        for perm in allow or []:
             if perm in VALID_PERMISSIONS:
                 setattr(overwrite, perm, True)
-        for perm in (deny or []):
+        for perm in deny or []:
             if perm in VALID_PERMISSIONS:
                 setattr(overwrite, perm, False)
 
@@ -255,7 +281,7 @@ async def send_message(
 
 async def update_server(
     guild: discord.Guild,
-    name: Optional[str] = None,
+    name: str | None = None,
 ) -> dict:
     try:
         kwargs = {}

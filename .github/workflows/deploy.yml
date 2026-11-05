@@ -71,6 +71,9 @@ jobs:
   # Required GitHub secrets (Settings → Secrets and variables → Actions):
   #   DISCORD_TOKEN       — your Discord bot token
   #   ANTHROPIC_API_KEY   — your Anthropic API key
+  #   DATABASE_URL        — Postgres connection string
+  #   BNET_CLIENT_ID / BNET_CLIENT_SECRET — Battle.net OAuth client
+  #   PUBLIC_BASE_URL     — public tunnel URL, e.g. https://link.yourguild.com
   #
   # The runner needs Docker + Docker Compose installed and the runner user added
   # to the docker group:
@@ -92,11 +95,24 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Write .env
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BNET_CLIENT_ID: ${{ secrets.BNET_CLIENT_ID }}
+          BNET_CLIENT_SECRET: ${{ secrets.BNET_CLIENT_SECRET }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          LINK_SERVER_HOST: 0.0.0.0
         run: |
-          cat > .env << 'EOF'
-          DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
-          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-          EOF
+          umask 077
+          printf '%s=%s\n' \
+            DISCORD_TOKEN "$DISCORD_TOKEN" \
+            ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" \
+            DATABASE_URL "$DATABASE_URL" \
+            BNET_CLIENT_ID "$BNET_CLIENT_ID" \
+            BNET_CLIENT_SECRET "$BNET_CLIENT_SECRET" \
+            PUBLIC_BASE_URL "$PUBLIC_BASE_URL" \
+            LINK_SERVER_HOST "$LINK_SERVER_HOST" > .env
 
       - name: Pull latest image
         run: docker compose pull
