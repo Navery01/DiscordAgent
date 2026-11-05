@@ -1,7 +1,12 @@
 services:
   bot:
+    # Pull the image built by the Deploy workflow; `docker compose build` still works locally.
+    image: ghcr.io/navery01/discordagent:latest
     build: .
     restart: unless-stopped
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
+    ports:
+      # Link server: reachable only from the host (point the Cloudflare Tunnel here).
+      - "127.0.0.1:8080:8080"

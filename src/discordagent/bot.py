@@ -2,10 +2,15 @@
 
 import logging
 import os
+
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
+
+from . import data_tools
 from .agent import ServerSetupAgent
+from .link_server import Config, create_link_url, start_link_server
 
 log = logging.getLogger(__name__)
 
@@ -18,10 +23,31 @@ class DiscordBot(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+        self.db = None
+        self.link_cfg = None
+        self.web_runner = None
 
     async def setup_hook(self):
+        if Config.is_configured():
+            self.link_cfg = Config.from_env()
+            self.db = await data_tools.create_pool(os.environ["DATABASE_URL"])
+            self.web_runner = await start_link_server(self, self.db, self.link_cfg)
+            self.purge_link_states.start()
+        else:
+            log.warning("Battle.net linking disabled: link env vars not set.")
         await self.tree.sync()
         print("Slash commands synced globally.")
+
+    async def close(self):
+        if self.db is not None:
+            self.purge_link_states.cancel()
+            await self.web_runner.cleanup()
+            await self.db.close()
+        await super().close()
+
+    @tasks.loop(hours=1)
+    async def purge_link_states(self):
+        await data_tools.purge_expired_states(self.db)
 
     async def on_ready(self):
         print(f"Logged in as {self.user} (ID: {self.user.id})")
@@ -35,6 +61,7 @@ class DiscordBot(discord.Client):
 
 bot = DiscordBot()
 
+
 @bot.event
 async def on_ready():
     """Triggered when the bot finishes logging in and is ready."""
@@ -42,6 +69,38 @@ async def on_ready():
         general = discord.utils.get(guild.text_channels, name="general")
         if general:
             await general.send("Mrrrrggghllhlhlh!")
+
+
+@bot.tree.command(name="link", description="Link your Battle.net account")
+async def link(interaction: discord.Interaction):
+    if bot.db is None:
+        await interaction.response.send_message(
+            "Account linking isn't configured.", ephemeral=True
+        )
+        return
+    url = await create_link_url(bot.db, bot.link_cfg, interaction.user.id)
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Link Battle.net", url=url))
+    await interaction.response.send_message(
+        "Here's your private link. It works once and expires in 10 minutes.",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="unlink", description="Delete your linked Battle.net data and characters"
+)
+async def unlink(interaction: discord.Interaction):
+    if bot.db is None:
+        await interaction.response.send_message(
+            "Account linking isn't configured.", ephemeral=True
+        )
+        return
+    deleted = await data_tools.delete_player(bot.db, interaction.user.id)
+    msg = "All your linked data was deleted." if deleted else "You have no linked data."
+    await interaction.response.send_message(msg, ephemeral=True)
+
 
 @bot.tree.command(
     name="agent",
@@ -64,7 +123,9 @@ async def run_task(interaction: discord.Interaction, agent: str):
     channel = interaction.channel
 
     await interaction.followup.send(f"⚙️ **Task:** {agent}")
-    log.info("/agent invoked | guild=%s user=%s task=%r", guild.name, interaction.user, agent)
+    log.info(
+        "/agent invoked | guild=%s user=%s task=%r", guild.name, interaction.user, agent
+    )
 
     try:
         agent_instance = ServerSetupAgent(guild=guild, progress_channel=channel)
@@ -74,6 +135,7 @@ async def run_task(interaction: discord.Interaction, agent: str):
         log.exception("/agent failed | guild=%s task=%r", guild.name, agent)
         await channel.send(f"❌ **Error:** {e}")
         raise
+
 
 @bot.tree.command(
     name="setup",
@@ -85,7 +147,9 @@ async def run_task(interaction: discord.Interaction, agent: str):
         "E.g. 'competitive gaming community', 'Python programming school', 'indie game studio'"
     )
 )
-async def setup_server(interaction: discord.Interaction, description: str = None):
+async def setup_server(
+    interaction: discord.Interaction, description: str | None = None
+):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message(
             "❌ You need **Administrator** permission to run this command.",
@@ -98,7 +162,11 @@ async def setup_server(interaction: discord.Interaction, description: str = None
     guild = interaction.guild
     channel = interaction.channel
 
-    theme_line = f"**Theme:** {description}" if description else "**Using default community structure**"
+    theme_line = (
+        f"**Theme:** {description}"
+        if description
+        else "**Using default community structure**"
+    )
 
     await interaction.followup.send(
         f"## 🚀 Server Setup Started\n"
@@ -107,7 +175,12 @@ async def setup_server(interaction: discord.Interaction, description: str = None
         f"Progress updates will appear below.\n"
         f"*(This usually takes 2–4 minutes)*"
     )
-    log.info("/setup invoked | guild=%s user=%s description=%r", guild.name, interaction.user, description)
+    log.info(
+        "/setup invoked | guild=%s user=%s description=%r",
+        guild.name,
+        interaction.user,
+        description,
+    )
 
     try:
         agent = ServerSetupAgent(guild=guild, progress_channel=channel)
@@ -121,7 +194,9 @@ async def setup_server(interaction: discord.Interaction, description: str = None
         )
 
     except Exception as e:
-        log.exception("/setup failed | guild=%s description=%r", guild.name, description)
+        log.exception(
+            "/setup failed | guild=%s description=%r", guild.name, description
+        )
         await channel.send(f"❌ **Setup failed:** {e}")
         raise
 
@@ -130,8 +205,12 @@ async def setup_server(interaction: discord.Interaction, description: str = None
     name="setup-preview",
     description="Preview what /setup would do without making any changes",
 )
-@app_commands.describe(description="Describe your server to see a preview of the structure")
-async def setup_preview(interaction: discord.Interaction, description: str = None):
+@app_commands.describe(
+    description="Describe your server to see a preview of the structure"
+)
+async def setup_preview(
+    interaction: discord.Interaction, description: str | None = None
+):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message(
             "❌ You need **Administrator** permission to run this command.",
@@ -142,7 +221,8 @@ async def setup_preview(interaction: discord.Interaction, description: str = Non
     await interaction.response.defer(thinking=True)
 
     import anthropic
-    from .agent import SYSTEM_PROMPT, TOOLS
+
+    from .agent import SYSTEM_PROMPT
 
     client = anthropic.AsyncAnthropic()
 
@@ -186,9 +266,6 @@ async def setup_preview(interaction: discord.Interaction, description: str = Non
             split_at = 2000
         await interaction.followup.send(full_text[:split_at])
         full_text = full_text[split_at:].lstrip()
-
-
-
 
 
 def main():

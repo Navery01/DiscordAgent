@@ -2,8 +2,10 @@
 
 import json
 import logging
+
 import anthropic
 import discord
+
 from . import server_tools
 
 log = logging.getLogger(__name__)
@@ -130,8 +132,14 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Category name, e.g. '📋 INFORMATION'"},
-                "position": {"type": "integer", "description": "Position order (0 = top, omit to append)"},
+                "name": {
+                    "type": "string",
+                    "description": "Category name, e.g. '📋 INFORMATION'",
+                },
+                "position": {
+                    "type": "integer",
+                    "description": "Position order (0 = top, omit to append)",
+                },
             },
             "required": ["name"],
         },
@@ -172,9 +180,18 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Channel name, e.g. '🔊 General' or '🎮 Gaming'"},
-                "category": {"type": "string", "description": "Exact category name to place this channel in"},
-                "user_limit": {"type": "integer", "description": "Max users (0 = unlimited)"},
+                "name": {
+                    "type": "string",
+                    "description": "Channel name, e.g. '🔊 General' or '🎮 Gaming'",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Exact category name to place this channel in",
+                },
+                "user_limit": {
+                    "type": "integer",
+                    "description": "Max users (0 = unlimited)",
+                },
             },
             "required": ["name"],
         },
@@ -186,9 +203,18 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Role name, e.g. '👑 Admin'"},
-                "color_hex": {"type": "string", "description": "Hex color code e.g. '#e74c3c'"},
-                "hoist": {"type": "boolean", "description": "Show separately in member list (default: true)"},
-                "mentionable": {"type": "boolean", "description": "Allow @mentioning (default: false)"},
+                "color_hex": {
+                    "type": "string",
+                    "description": "Hex color code e.g. '#e74c3c'",
+                },
+                "hoist": {
+                    "type": "boolean",
+                    "description": "Show separately in member list (default: true)",
+                },
+                "mentionable": {
+                    "type": "boolean",
+                    "description": "Allow @mentioning (default: false)",
+                },
                 "permissions": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -210,7 +236,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "channel_name": {"type": "string", "description": "Exact channel name"},
-                "role_name": {"type": "string", "description": "Exact role name, or '@everyone' for default"},
+                "role_name": {
+                    "type": "string",
+                    "description": "Exact role name, or '@everyone' for default",
+                },
                 "allow": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -231,8 +260,14 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "category_name": {"type": "string", "description": "Exact category name"},
-                "role_name": {"type": "string", "description": "Exact role name, or '@everyone'"},
+                "category_name": {
+                    "type": "string",
+                    "description": "Exact category name",
+                },
+                "role_name": {
+                    "type": "string",
+                    "description": "Exact role name, or '@everyone'",
+                },
                 "allow": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -405,7 +440,9 @@ class ServerSetupAgent:
                 "community structure."
             )
 
-        log.info("run() started | guild=%s description=%r", self.guild.name, description)
+        log.info(
+            "run() started | guild=%s description=%r", self.guild.name, description
+        )
         messages = [{"role": "user", "content": user_message}]
         tool_count = 0
         iteration = 0
@@ -427,7 +464,9 @@ class ServerSetupAgent:
                 log.error("Anthropic API error on iteration %d: %s", iteration, e)
                 raise
 
-            log.debug("stop_reason=%s blocks=%d", response.stop_reason, len(response.content))
+            log.debug(
+                "stop_reason=%s blocks=%d", response.stop_reason, len(response.content)
+            )
 
             # Post any text the agent produces as a progress update
             for block in response.content:
@@ -456,25 +495,47 @@ class ServerSetupAgent:
 
                 # Brief inline status
                 if result_data.get("success"):
-                    note = f" *(already existed)*" if result_data.get("note") == "already exists" else ""
-                    name = result_data.get("name") or result_data.get("channel") or result_data.get("category") or "✓"
+                    note = (
+                        " *(already existed)*"
+                        if result_data.get("note") == "already exists"
+                        else ""
+                    )
+                    name = (
+                        result_data.get("name")
+                        or result_data.get("channel")
+                        or result_data.get("category")
+                        or "✓"
+                    )
                     await self._post(f"  `{block.name}` → **{name}**{note}")
                 else:
-                    await self._post(f"  `{block.name}` ⚠️ {result_data.get('error', 'unknown error')}")
+                    await self._post(
+                        f"  `{block.name}` ⚠️ {result_data.get('error', 'unknown error')}"
+                    )
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result_str,
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_str,
+                    }
+                )
 
             messages.append({"role": "user", "content": tool_results})
 
         if iteration >= MAX_ITERATIONS:
-            log.error("run() hit MAX_ITERATIONS (%d) | guild=%s", MAX_ITERATIONS, self.guild.name)
+            log.error(
+                "run() hit MAX_ITERATIONS (%d) | guild=%s",
+                MAX_ITERATIONS,
+                self.guild.name,
+            )
             await self._post("⚠️ Reached step limit — setup may be incomplete.")
 
-        log.info("run() finished | guild=%s tool_count=%d iterations=%d", self.guild.name, tool_count, iteration)
+        log.info(
+            "run() finished | guild=%s tool_count=%d iterations=%d",
+            self.guild.name,
+            tool_count,
+            iteration,
+        )
 
         # Extract the final summary from the last assistant message
         for msg in reversed(messages):
@@ -482,7 +543,11 @@ class ServerSetupAgent:
                 content = msg["content"]
                 if isinstance(content, list):
                     for block in content:
-                        if hasattr(block, "type") and block.type == "text" and block.text.strip():
+                        if (
+                            hasattr(block, "type")
+                            and block.type == "text"
+                            and block.text.strip()
+                        ):
                             return block.text.strip()
                 break
 
@@ -512,7 +577,9 @@ class ServerSetupAgent:
                 log.error("Anthropic API error on iteration %d: %s", iteration, e)
                 raise
 
-            log.debug("stop_reason=%s blocks=%d", response.stop_reason, len(response.content))
+            log.debug(
+                "stop_reason=%s blocks=%d", response.stop_reason, len(response.content)
+            )
 
             for block in response.content:
                 if block.type == "text" and block.text.strip():
@@ -536,24 +603,46 @@ class ServerSetupAgent:
                 result_data = json.loads(result_str)
 
                 if result_data.get("success"):
-                    note = " *(already existed)*" if result_data.get("note") == "already exists" else ""
-                    name = result_data.get("name") or result_data.get("channel") or result_data.get("category") or "✓"
+                    note = (
+                        " *(already existed)*"
+                        if result_data.get("note") == "already exists"
+                        else ""
+                    )
+                    name = (
+                        result_data.get("name")
+                        or result_data.get("channel")
+                        or result_data.get("category")
+                        or "✓"
+                    )
                     await self._post(f"  `{block.name}` → **{name}**{note}")
                 else:
-                    await self._post(f"  `{block.name}` ⚠️ {result_data.get('error', 'unknown error')}")
+                    await self._post(
+                        f"  `{block.name}` ⚠️ {result_data.get('error', 'unknown error')}"
+                    )
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result_str,
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_str,
+                    }
+                )
 
             messages.append({"role": "user", "content": tool_results})
 
         if iteration >= MAX_ITERATIONS:
-            log.error("run_task() hit MAX_ITERATIONS (%d) | guild=%s", MAX_ITERATIONS, self.guild.name)
+            log.error(
+                "run_task() hit MAX_ITERATIONS (%d) | guild=%s",
+                MAX_ITERATIONS,
+                self.guild.name,
+            )
 
-        log.info("run_task() finished | guild=%s tool_count=%d iterations=%d", self.guild.name, tool_count, iteration)
+        log.info(
+            "run_task() finished | guild=%s tool_count=%d iterations=%d",
+            self.guild.name,
+            tool_count,
+            iteration,
+        )
 
         # Return the agent's final text response
         for msg in reversed(messages):
@@ -561,7 +650,11 @@ class ServerSetupAgent:
                 content = msg["content"]
                 if isinstance(content, list):
                     for block in content:
-                        if hasattr(block, "type") and block.type == "text" and block.text.strip():
+                        if (
+                            hasattr(block, "type")
+                            and block.type == "text"
+                            and block.text.strip()
+                        ):
                             return block.text.strip()
                 break
 
