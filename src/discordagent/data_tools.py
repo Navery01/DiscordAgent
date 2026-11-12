@@ -81,7 +81,11 @@ ON CONFLICT (region, realm_slug, name) DO UPDATE
 
 async def create_pool(dsn: str) -> asyncpg.Pool:
     """Create the pool, ensure the schema exists, and default to the `guild` schema."""
-    pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "guild"})
+    pool = await asyncpg.create_pool(
+        dsn,
+        ssl=False,
+        server_settings={"search_path": "guild"},
+    )
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
     return pool
@@ -175,4 +179,21 @@ async def delete_player(pool: asyncpg.Pool, discord_id: int) -> bool:
         await pool.fetchval(
             "DELETE FROM player WHERE discord_id = $1 RETURNING true", discord_id
         )
+    )
+
+
+async def get_player_main_or_first_character(
+    pool: asyncpg.Pool, discord_id: int
+) -> asyncpg.Record | None:
+    """Return the player's main character, or the first linked one if no main is set."""
+    return await pool.fetchrow(
+        """
+        SELECT c.region, c.realm_slug, c.name
+          FROM "character" c
+          JOIN player p ON p.player_id = c.player_id
+         WHERE p.discord_id = $1
+         ORDER BY c.is_main DESC, c.character_id ASC
+         LIMIT 1
+        """,
+        discord_id,
     )

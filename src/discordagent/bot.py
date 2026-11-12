@@ -3,6 +3,7 @@
 import logging
 import os
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import tasks
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 
 from . import data_tools
 from .agent import ServerSetupAgent
+from .blizzard_api import BlizzardApiClient
 from .link_server import Config, create_link_url, start_link_server
 
 log = logging.getLogger(__name__)
@@ -26,13 +28,24 @@ class DiscordBot(discord.Client):
         self.db = None
         self.link_cfg = None
         self.web_runner = None
+        self.blizzard = None
 
     async def setup_hook(self):
+        if os.environ.get("BNET_CLIENT_ID") and os.environ.get("BNET_CLIENT_SECRET"):
+            self.blizzard = BlizzardApiClient(
+                os.environ["BNET_CLIENT_ID"],
+                os.environ["BNET_CLIENT_SECRET"],
+            )
+
         if Config.is_configured():
-            self.link_cfg = Config.from_env()
-            self.db = await data_tools.create_pool(os.environ["DATABASE_URL"])
-            self.web_runner = await start_link_server(self, self.db, self.link_cfg)
-            self.purge_link_states.start()
+            try:
+                self.link_cfg = Config.from_env()
+            except ValueError as e:
+                log.error("Battle.net linking disabled: %s", e)
+            else:
+                self.db = await data_tools.create_pool(os.environ["DATABASE_URL"])
+                self.web_runner = await start_link_server(self, self.db, self.link_cfg)
+                self.purge_link_states.start()
         else:
             log.warning("Battle.net linking disabled: link env vars not set.")
         await self.tree.sync()
@@ -43,6 +56,8 @@ class DiscordBot(discord.Client):
             self.purge_link_states.cancel()
             await self.web_runner.cleanup()
             await self.db.close()
+        if self.blizzard is not None:
+            await self.blizzard.close()
         await super().close()
 
     @tasks.loop(hours=1)
@@ -100,6 +115,67 @@ async def unlink(interaction: discord.Interaction):
     deleted = await data_tools.delete_player(bot.db, interaction.user.id)
     msg = "All your linked data was deleted." if deleted else "You have no linked data."
     await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(
+    name="character-check",
+    description="Fetch your linked character summary from Blizzard",
+)
+async def character_check(interaction: discord.Interaction):
+    if bot.db is None:
+        await interaction.response.send_message(
+            "Account linking isn't configured.", ephemeral=True
+        )
+        return
+    if bot.blizzard is None:
+        await interaction.response.send_message(
+            "Blizzard API client credentials aren't configured.", ephemeral=True
+        )
+        return
+
+    linked = await data_tools.get_player_main_or_first_character(
+        bot.db, interaction.user.id
+    )
+    if linked is None:
+        await interaction.response.send_message(
+            "No linked character found. Run /link first.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        summary = await bot.blizzard.get_character_summary(
+            linked["region"],
+            linked["realm_slug"],
+            linked["name"],
+        )
+    except aiohttp.ClientResponseError as e:
+        if e.status == 404:
+            await interaction.followup.send(
+                "Your linked character is not publicly available in the Blizzard API right now.",
+                ephemeral=True,
+            )
+            return
+        log.exception("character-check failed (HTTP %s)", e.status)
+        await interaction.followup.send(
+            "Blizzard API request failed. Please try again later.", ephemeral=True
+        )
+        return
+    except (aiohttp.ClientError, TimeoutError):
+        log.exception("character-check failed")
+        await interaction.followup.send(
+            "Blizzard API request failed. Please try again later.", ephemeral=True
+        )
+        return
+
+    level = summary.get("level", "unknown")
+    ilvl = summary.get("equipped_item_level", "unknown")
+    await interaction.followup.send(
+        f"Fetched **{summary.get('name', linked['name'])}** "
+        f"({summary.get('realm', {}).get('name', linked['realm_slug'])}) — "
+        f"level **{level}**, equipped ilvl **{ilvl}**.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(
