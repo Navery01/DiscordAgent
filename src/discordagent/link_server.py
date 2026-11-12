@@ -320,11 +320,12 @@ async def start_link_server(
     pool: asyncpg.Pool,
     cfg: Config,
     host: str | None = None,
-    port: int = 8080,
+    port: int = 8082,
 ) -> web.AppRunner:
     # Inside a container the tunnel must reach us on 0.0.0.0; docker-compose
     # only publishes the port on the host's loopback.
     host = host or os.environ.get("LINK_SERVER_HOST", "127.0.0.1")
+    port = int(os.environ.get("LINK_SERVER_PORT", str(port)))
     app = web.Application(client_max_size=16 * 1024)  # the only body is a tiny form
     app[BOT] = bot
     app[DB] = pool
