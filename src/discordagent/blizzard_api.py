@@ -45,7 +45,9 @@ class BlizzardApiClient:
 
             self._token = payload["access_token"]
             # Refresh one minute early so active requests don't race token expiry.
-            self._expires_at = time.monotonic() + max(int(payload["expires_in"]) - 60, 1)
+            self._expires_at = time.monotonic() + max(
+                int(payload["expires_in"]) - 60, 1
+            )
             return self._token
 
     async def get_profile_json(
