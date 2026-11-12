@@ -77,7 +77,7 @@ def normalize_public_base_url(value: str) -> str:
     """Normalize PUBLIC_BASE_URL and ensure it is a valid HTTP(S) origin."""
     url = value.strip()
     if "://" not in url:
-        url = f"https://{url}"
+        url = f"http://{url}"
 
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -326,7 +326,7 @@ async def start_link_server(
     # only publishes the port on the host's loopback.
     host = host or os.environ.get("LINK_SERVER_HOST", "127.0.0.1")
     port = int(os.environ.get("LINK_SERVER_PORT", str(port)))
-    app = web.Application(client_max_size=16 * 1024)  # the only body is a tiny form
+    app = web.Application(client_max_size=64 * 1024)  # the only body is a tiny form
     app[BOT] = bot
     app[DB] = pool
     app[CFG] = cfg
