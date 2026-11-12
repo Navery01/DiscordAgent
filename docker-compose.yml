@@ -9,4 +9,4 @@ services:
       - PYTHONUNBUFFERED=1
     ports:
       # Link server: reachable only from the host (point the Cloudflare Tunnel here).
-      - "127.0.0.1:8080:8082"
+      - "127.0.0.1:8082:8082"
