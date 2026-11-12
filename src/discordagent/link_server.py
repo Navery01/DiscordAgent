@@ -281,7 +281,7 @@ async def fetch_characters(http: aiohttp.ClientSession, token: str) -> list[dict
             http,
             f"{API_BASE}/profile/user/wow",
             token,
-            namespace=f"profile-{REGION}",
+            namespace=f"profile-forever-{REGION}",
             locale="en_US",
         )
     except aiohttp.ClientResponseError as e:
