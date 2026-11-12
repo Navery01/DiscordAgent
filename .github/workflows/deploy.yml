@@ -82,7 +82,7 @@ jobs:
   deploy:
     name: Deploy to homelab
     needs: build-and-push
-    runs-on: [self-hosted, homelab]
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
