@@ -81,6 +81,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy to homelab
+    environment: DiscordAgent-CD
     needs: build-and-push
     runs-on: self-hosted
 
