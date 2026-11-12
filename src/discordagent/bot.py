@@ -96,11 +96,23 @@ async def link(interaction: discord.Interaction):
     url = await create_link_url(bot.db, bot.link_cfg, interaction.user.id)
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="Link Battle.net", url=url))
-    await interaction.response.send_message(
-        "Here's your private link. It works once and expires in 10 minutes.",
-        view=view,
-        ephemeral=True,
-    )
+    try:
+        await interaction.response.send_message(
+            "Here's your private link. It works once and expires in 10 minutes.",
+            view=view,
+            ephemeral=True,
+        )
+    except discord.HTTPException:
+        log.exception("Failed to send /link button URL")
+        msg = (
+            "Discord rejected the button URL, so here's your private link directly:\n"
+            f"{url}\n\n"
+            "It works once and expires in 10 minutes."
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
 
 
 @bot.tree.command(
