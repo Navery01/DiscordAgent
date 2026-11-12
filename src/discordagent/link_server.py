@@ -165,6 +165,12 @@ Run <code>/unlink</code> in Discord at any time to delete all of it.</p>
 <form method="post" action="/link/consent">
   <input type="hidden" name="state" value="{html.escape(state)}">
   <p><label><input type="checkbox" name="agree" value="yes" required> I agree</label></p>
+  <p><label for="game_version">Game Version</label>
+  <select name="game_version" id="game_version" required>
+    <option value="retail">Retail</option>
+    <option value="classic">Classic</option>
+    <option value="forever">Forever</option>
+  </select></p>
   <button type="submit">Continue to Battle.net</button>
 </form>"""
     return page("Link your Battle.net account", body)
