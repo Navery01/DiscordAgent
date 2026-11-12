@@ -20,7 +20,7 @@ import logging
 import os
 import secrets
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 import asyncpg
@@ -55,10 +55,11 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
+        public_base_url = normalize_public_base_url(os.environ["PUBLIC_BASE_URL"])
         return cls(
             client_id=os.environ["BNET_CLIENT_ID"],
             client_secret=os.environ["BNET_CLIENT_SECRET"],
-            public_base_url=os.environ["PUBLIC_BASE_URL"].rstrip("/"),
+            public_base_url=public_base_url,
         )
 
     @classmethod
@@ -70,6 +71,26 @@ class Config:
             "PUBLIC_BASE_URL",
         )
         return all(os.environ.get(k) for k in keys)
+
+
+def normalize_public_base_url(value: str) -> str:
+    """Normalize PUBLIC_BASE_URL and ensure it is a valid HTTP(S) origin."""
+    url = value.strip()
+    if "://" not in url:
+        url = f"https://{url}"
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            "PUBLIC_BASE_URL must be a full URL like https://link.yourguild.com"
+        )
+
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError(
+            "PUBLIC_BASE_URL must only contain scheme and host, for example https://link.yourguild.com"
+        )
+
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 # Typed keys for values shared across handlers (aiohttp 3.9+).
