@@ -159,11 +159,13 @@ async def save_link(
             link["consented_at"],
         )
         for c in characters:
+            realm_slug = c.get("realm", {}).get("slug", "")
+
             args = (
                 c["id"],
                 player_id,
                 region,
-                c["realm"]["slug"],
+                realm_slug,
                 c["name"],
                 c["playable_class"]["id"],
             )
