@@ -245,9 +245,8 @@ async def oauth_callback(request: web.Request) -> web.Response:
         )
 
     await notify_player(request.app[BOT], link["discord_id"], len(characters))
-
     names = "".join(
-        f"<li>{html.escape(c['name'])} - {html.escape(c['realm']['name'])}</li>"
+        f"<li>{html.escape(c['name'])}</li>"
         for c in characters
     )
     body = (
