@@ -383,6 +383,72 @@ async def save_item(pool: asyncpg.Pool, item_id: int, data: dict) -> None:
     )
 
 
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards so user input matches literally."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def search_auctioned_items(
+    pool: asyncpg.Pool, query: str, limit: int = 25
+) -> list[asyncpg.Record]:
+    """Items currently on the auction house whose name contains `query`, best matches first."""
+    return await pool.fetch(
+        """
+        SELECT i.item_id, i.name
+          FROM item i
+         WHERE i.name ILIKE '%' || $1 || '%'
+           AND EXISTS (SELECT 1 FROM auction a WHERE a.item_id = i.item_id)
+         ORDER BY lower(i.name) = lower($2) DESC,   -- exact match
+                  i.name ILIKE $1 || '%' DESC,       -- then prefix match
+                  ' ' || i.name ILIKE '% ' || $1 || '%' DESC,  -- then a word starts with it
+                  length(i.name), i.name
+         LIMIT $3
+        """,
+        _like_escape(query),
+        query,
+        limit,
+    )
+
+
+async def find_item(pool: asyncpg.Pool, text: str) -> asyncpg.Record | None:
+    """Resolve an item ID or name to (item_id, name), preferring items that are listed."""
+    text = text.strip()
+    if text.isdigit():
+        return await pool.fetchrow(
+            """SELECT a.item_id, i.name
+                 FROM (SELECT $1::bigint AS item_id) a
+                 LEFT JOIN item i ON i.item_id = a.item_id""",
+            int(text),
+        )
+    if not text:
+        return None
+    listed = await search_auctioned_items(pool, text, limit=1)
+    if listed:
+        return listed[0]
+    # Not on the AH right now, but say so by name if we know the item.
+    return await pool.fetchrow(
+        "SELECT item_id, name FROM item WHERE name ILIKE $1 ORDER BY item_id LIMIT 1",
+        _like_escape(text),
+    )
+
+
+async def get_auction_price(pool: asyncpg.Pool, item_id: int) -> asyncpg.Record:
+    """Price summary for one item across current listings (counts are 0 if none)."""
+    return await pool.fetchrow(
+        """
+        SELECT min(a.unit_price)                                    AS min_price,
+               (sum(a.unit_price * a.quantity) / NULLIF(sum(a.quantity), 0))::bigint
+                                                                    AS avg_price,
+               coalesce(sum(a.quantity), 0)                         AS quantity,
+               count(a.auction_id)                                  AS auctions,
+               (SELECT sell_price FROM item WHERE item_id = $1)     AS sell_price
+          FROM auction a
+         WHERE a.item_id = $1 AND a.unit_price IS NOT NULL
+        """,
+        item_id,
+    )
+
+
 async def get_player_main_or_first_character(
     pool: asyncpg.Pool, discord_id: int
 ) -> asyncpg.Record | None:

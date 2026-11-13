@@ -240,6 +240,74 @@ async def character_check(interaction: discord.Interaction):
     )
 
 
+def format_gold(copper: int | None) -> str:
+    """12345 -> '1g 23s 45c'; leading zero units are dropped."""
+    if copper is None:
+        return "—"
+    gold, rem = divmod(int(copper), 10_000)
+    silver, copper = divmod(rem, 100)
+    if gold:
+        return f"{gold:,}g {silver}s {copper}c"
+    if silver:
+        return f"{silver}s {copper}c"
+    return f"{copper}c"
+
+
+@bot.tree.command(
+    name="price", description="Look up an item's price on the Horde auction house"
+)
+@app_commands.describe(item="Item name (pick from the list) or item ID")
+async def price(interaction: discord.Interaction, item: str):
+    if bot.db is None:
+        await interaction.response.send_message(
+            "The auction database isn't configured.", ephemeral=True
+        )
+        return
+
+    found = await data_tools.find_item(bot.db, item)
+    if found is None:
+        await interaction.response.send_message(
+            f"No item matching **{discord.utils.escape_markdown(item)}** is listed.",
+            ephemeral=True,
+        )
+        return
+
+    name = found["name"] or f"Item {found['item_id']}"
+    stats = await data_tools.get_auction_price(bot.db, found["item_id"])
+    if not stats["auctions"]:
+        await interaction.response.send_message(
+            f"**{discord.utils.escape_markdown(name)}** has no Horde auction listings right now.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=name,
+        description="Horde commodities, as of the last hourly scan",
+    )
+    embed.add_field(name="Lowest", value=format_gold(stats["min_price"]))
+    embed.add_field(name="Average", value=format_gold(stats["avg_price"]))
+    embed.add_field(
+        name="Listed", value=f"{stats['quantity']:,} in {stats['auctions']:,} auctions"
+    )
+    if stats["sell_price"]:
+        embed.add_field(name="Vendor buys for", value=format_gold(stats["sell_price"]))
+    await interaction.response.send_message(embed=embed)
+
+
+@price.autocomplete("item")
+async def price_item_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if bot.db is None or not current.strip():
+        return []
+    rows = await data_tools.search_auctioned_items(bot.db, current.strip())
+    # The value is the item ID, so picking a suggestion always resolves exactly.
+    return [
+        app_commands.Choice(name=r["name"][:100], value=str(r["item_id"])) for r in rows
+    ]
+
+
 @bot.tree.command(
     name="agent",
     description="Ask the AI agent to do anything on the server in plain English",
