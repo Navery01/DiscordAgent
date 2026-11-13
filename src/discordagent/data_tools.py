@@ -1,7 +1,6 @@
 """Database access for linked players and their WoW characters (Postgres, schema `guild`)."""
 
 import json
-import logging
 
 import asyncpg
 
@@ -463,3 +462,7 @@ async def get_player_main_or_first_character(
         """,
         discord_id,
     )
+
+async def trigger_load_item_scd2(pool: asyncpg.Pool) -> None:
+    """Trigger the load_item_scd2 procedure."""
+    await pool.execute("CALL auction_rpt.load_item_scd2()")

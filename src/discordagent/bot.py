@@ -98,6 +98,8 @@ class DiscordBot(discord.Client):
         try:
             synced = await auction_house.sync_items(self.blizzard, self.db)
             log.info("Item sync: looked up %d items", synced)
+            await data_tools.trigger_load_item_scd2(self.db)
+            log.info("Triggered load_item_scd2 procedure")
         except Exception:
             log.exception("Item sync failed")
 
