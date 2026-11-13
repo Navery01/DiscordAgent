@@ -4,15 +4,21 @@ import logging
 import os
 
 import aiohttp
+import asyncpg
 import discord
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from . import data_tools
+from . import auction_house, data_tools
 from .agent import ServerSetupAgent
 from .blizzard_api import BlizzardApiClient
-from .link_server import Config, create_link_url, start_link_server
+from .link_server import (
+    Config,
+    create_link_url,
+    refresh_characters_equipment,
+    start_link_server,
+)
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +52,9 @@ class DiscordBot(discord.Client):
                 self.db = await data_tools.create_pool(os.environ["DATABASE_URL"])
                 self.web_runner = await start_link_server(self, self.db, self.link_cfg)
                 self.purge_link_states.start()
+                if self.blizzard is not None:
+                    self.poll_equipment.start()
+                    self.poll_auctions.start()
         else:
             log.warning("Battle.net linking disabled: link env vars not set.")
         await self.tree.sync()
@@ -54,6 +63,8 @@ class DiscordBot(discord.Client):
     async def close(self):
         if self.db is not None:
             self.purge_link_states.cancel()
+            self.poll_equipment.cancel()
+            self.poll_auctions.cancel()
             await self.web_runner.cleanup()
             await self.db.close()
         if self.blizzard is not None:
@@ -63,6 +74,32 @@ class DiscordBot(discord.Client):
     @tasks.loop(hours=1)
     async def purge_link_states(self):
         await data_tools.purge_expired_states(self.db)
+
+    @tasks.loop(minutes=15)
+    async def poll_equipment(self):
+        """Refresh every linked character's gear. Runs once at startup, then every 15 minutes."""
+        # An unhandled exception would stop the loop for good, so log and wait for the next run.
+        try:
+            characters = await data_tools.get_all_characters(self.db)
+            saved = await refresh_characters_equipment(self.blizzard, self.db, characters)
+            log.info("Equipment poll: refreshed %d of %d characters", saved, len(characters))
+        except Exception:
+            log.exception("Equipment poll failed")
+
+    @tasks.loop(hours=1)  # Blizzard only refreshes the auction snapshot about hourly
+    async def poll_auctions(self):
+        """Scan the Horde auction house, then fill in item lookups for new or stale items."""
+        try:
+            count = await auction_house.scan_auctions(self.blizzard, self.db)
+            log.info("Auction scan: stored %d Horde commodity auctions", count)
+        except Exception:
+            log.exception("Auction scan failed")
+        # Runs even if the scan failed, working from the auctions already stored.
+        try:
+            synced = await auction_house.sync_items(self.blizzard, self.db)
+            log.info("Item sync: looked up %d items", synced)
+        except Exception:
+            log.exception("Item sync failed")
 
     async def on_ready(self):
         print(f"Logged in as {self.user} (ID: {self.user.id})")
@@ -180,12 +217,25 @@ async def character_check(interaction: discord.Interaction):
         )
         return
 
+    # Gear refresh is best-effort; the summary reply goes out either way.
+    gear_note = ""
+    try:
+        equipment = await bot.blizzard.get_character_equipment(
+            linked["region"], linked["name"]
+        )
+        slots = await data_tools.save_equipment(
+            bot.db, linked["character_id"], equipment
+        )
+        gear_note = f" Saved {slots} equipped items."
+    except (aiohttp.ClientError, TimeoutError, asyncpg.PostgresError):
+        log.exception("character-check equipment refresh failed")
+
     level = summary.get("level", "unknown")
     ilvl = summary.get("equipped_item_level", "unknown")
     await interaction.followup.send(
-        f"Fetched **{summary.get('name', linked['name'])}** "
+        f"Fetched **{summary.get('name', linked.get('name',"N/A") + " " + linked.get('surname', ""))}** "
         f"({summary.get('realm', {}).get('name', linked['realm_slug'])}) — "
-        f"level **{level}**, equipped ilvl **{ilvl}**.",
+        f"level **{level}**, equipped ilvl **{ilvl}**.{gear_note}",
         ephemeral=True,
     )
 

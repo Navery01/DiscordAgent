@@ -15,6 +15,7 @@ Register this redirect URI in the Blizzard developer portal, exactly:
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -245,8 +246,10 @@ async def oauth_callback(request: web.Request) -> web.Response:
         )
 
     await notify_player(request.app[BOT], link["discord_id"], len(characters))
+    # Gear is fetched in the background so the player isn't kept waiting.
+    _spawn(refresh_equipment(request.app[BOT], db, link["discord_id"]))
     names = "".join(
-        f"<li>{html.escape(c['name'])}</li>"
+        f"<li>{html.escape(c['name'] + " " + c.get('surname', ''))}</li>"
         for c in characters
     )
     body = (
@@ -293,12 +296,53 @@ async def fetch_characters(http: aiohttp.ClientSession, token: str) -> list[dict
         if e.status == 404:  # Battle.net account with no WoW characters in this region
             return []
         raise
+
     return [
         c
         for acct in data.get("wow_accounts", [])
         for c in acct.get("characters", [])
         if c.get("level", 0) >= MIN_LEVEL
     ]
+
+
+# Strong references so background tasks aren't garbage-collected mid-run.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def refresh_equipment(bot, pool: asyncpg.Pool, discord_id: int) -> None:
+    """Fetch and store equipment for each of a player's linked characters."""
+    blizzard = getattr(bot, "blizzard", None)
+    if blizzard is None:
+        return
+    characters = await data_tools.get_player_characters(pool, discord_id)
+    await refresh_characters_equipment(blizzard, pool, characters)
+
+
+async def refresh_characters_equipment(
+    blizzard, pool: asyncpg.Pool, characters: list[asyncpg.Record]
+) -> int:
+    """Fetch and store equipment for the given characters. Returns how many were saved.
+
+    Each needs character_id, region and name. One failure never stops the rest.
+    """
+    saved = 0
+    for c in characters:
+        try:
+            equipment = await blizzard.get_character_equipment(c["region"], c["name"])
+            await data_tools.save_equipment(pool, c["character_id"], equipment)
+            saved += 1
+        except aiohttp.ClientResponseError as e:
+            if e.status != 404:  # 404 = character not public in the API; nothing to store
+                log.warning("Equipment fetch for %r failed (HTTP %s)", c["name"], e.status)
+        except Exception:
+            log.exception("Equipment refresh for %r failed", c["name"])
+    return saved
 
 
 async def notify_player(bot, discord_id: int, count: int) -> None:

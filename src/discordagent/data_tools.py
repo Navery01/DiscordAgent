@@ -1,5 +1,8 @@
 """Database access for linked players and their WoW characters (Postgres, schema `guild`)."""
 
+import json
+import logging
+
 import asyncpg
 
 SCHEMA = """
@@ -41,6 +44,43 @@ CREATE TABLE IF NOT EXISTS "character" (
 CREATE UNIQUE INDEX IF NOT EXISTS one_main_per_player
     ON "character" (player_id) WHERE is_main;
 
+-- One row per equipped slot; replaced wholesale on each refresh.
+CREATE TABLE IF NOT EXISTS equipment (
+    character_id bigint NOT NULL REFERENCES "character" ON DELETE CASCADE,
+    slot         text NOT NULL,     -- Blizzard slot type, e.g. HEAD, MAIN_HAND
+    item_id      bigint,
+    name         text,
+    item_level   integer,
+    quality      text,              -- e.g. EPIC, RARE
+    raw          jsonb NOT NULL,    -- the full equipped_items entry from Blizzard
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (character_id, slot)
+);
+
+-- Current Horde commodity auctions; rows for auctions no longer listed are removed on each scan.
+CREATE TABLE IF NOT EXISTS auction (
+    auction_id bigint PRIMARY KEY,
+    item_id    bigint NOT NULL,
+    quantity   integer NOT NULL,
+    unit_price bigint,              -- copper per unit
+    time_left  text NOT NULL        -- SHORT, MEDIUM, LONG, VERY_LONG
+);
+-- The item_id index lives in sql/create_auction_tables.sql: CREATE INDEX needs table
+-- ownership (even with IF NOT EXISTS), and the bot's role doesn't own these tables.
+
+-- Static item data, looked up for items seen on the auction house and refreshed rarely.
+CREATE TABLE IF NOT EXISTS item (
+    item_id       bigint PRIMARY KEY,
+    name          text,             -- NULL if Blizzard has no data for this item
+    quality       text,             -- e.g. COMMON, RARE, EPIC
+    item_class    text,
+    item_subclass text,
+    sell_price     bigint,          -- copper a vendor pays you for one
+    purchase_price bigint,          -- copper a vendor charges for one
+    raw           jsonb NOT NULL,
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS oauth_link_state (
     state           text PRIMARY KEY,
     discord_id      bigint NOT NULL,
@@ -77,6 +117,11 @@ ON CONFLICT (region, realm_slug, name) DO UPDATE
        blizzard_character_id = EXCLUDED.blizzard_character_id,
        class_id = EXCLUDED.class_id,
        verified = true"""
+
+
+INSERT_EQUIPMENT = """
+INSERT INTO equipment (character_id, slot, item_id, name, item_level, quality, raw)
+VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)"""
 
 
 async def create_pool(dsn: str) -> asyncpg.Pool:
@@ -158,15 +203,16 @@ async def save_link(
             link["consent_version"],
             link["consented_at"],
         )
+        logging.info(characters)
         for c in characters:
             realm_slug = c.get("realm", {}).get("slug", "")
-
+            name = c.get("name", "N/A") + " " + c.get("surname", "")
             args = (
                 c["id"],
                 player_id,
                 region,
                 realm_slug,
-                c["name"],
+                name,
                 c["playable_class"]["id"],
             )
             # Match on Blizzard's ID first so renames and realm transfers update in place.
@@ -184,13 +230,166 @@ async def delete_player(pool: asyncpg.Pool, discord_id: int) -> bool:
     )
 
 
+async def get_player_characters(
+    pool: asyncpg.Pool, discord_id: int
+) -> list[asyncpg.Record]:
+    """All of a player's linked characters."""
+    return await pool.fetch(
+        """
+        SELECT c.character_id, c.region, c.realm_slug, c.name
+          FROM "character" c
+          JOIN player p ON p.player_id = c.player_id
+         WHERE p.discord_id = $1
+         ORDER BY c.character_id
+        """,
+        discord_id,
+    )
+
+
+async def get_all_characters(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    """Every linked character, for background refreshes."""
+    return await pool.fetch(
+        'SELECT character_id, region, realm_slug, name FROM "character" ORDER BY character_id'
+    )
+
+
+def _equipment_rows(character_id: int, equipment: dict) -> list[tuple]:
+    """Flatten Blizzard's equipment response into INSERT_EQUIPMENT rows, one per slot."""
+    by_slot: dict[str, tuple] = {}
+    for item in equipment.get("equipped_items") or []:
+        slot = (item.get("slot") or {}).get("type")
+        if not slot:
+            continue
+        by_slot[slot] = (
+            character_id,
+            slot,
+            (item.get("item") or {}).get("id"),
+            item.get("name"),
+            (item.get("level") or {}).get("value"),
+            (item.get("quality") or {}).get("type"),
+            json.dumps(item),
+        )
+    return list(by_slot.values())
+
+
+async def save_equipment(pool: asyncpg.Pool, character_id: int, equipment: dict) -> int:
+    """Replace a character's stored gear with a Blizzard equipment response. Returns the slot count."""
+    rows = _equipment_rows(character_id, equipment)
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("DELETE FROM equipment WHERE character_id = $1", character_id)
+        if rows:
+            await conn.executemany(INSERT_EQUIPMENT, rows)
+    return len(rows)
+
+
+AUCTION_COLUMNS = ("auction_id", "item_id", "quantity", "unit_price", "time_left")
+
+
+def _auction_rows(auctions: list[dict]) -> list[tuple]:
+    """Flatten Blizzard's auctions into rows; later duplicates of an id win."""
+    by_id: dict[int, tuple] = {}
+    for a in auctions:
+        item_id = (a.get("item") or {}).get("id")
+        if a.get("id") is None or item_id is None:
+            continue
+        by_id[a["id"]] = (
+            a["id"],
+            item_id,
+            a.get("quantity", 0),
+            a.get("unit_price"),
+            a.get("time_left", ""),
+        )
+    return list(by_id.values())
+
+
+async def save_auctions(pool: asyncpg.Pool, auctions: list[dict]) -> int:
+    """Upsert a full auction snapshot and drop auctions no longer listed. Returns the row count."""
+    rows = _auction_rows(auctions)
+    async with pool.acquire() as conn, conn.transaction():
+        # Bulk-load into a temp table with COPY; row-by-row inserts are far too slow here.
+        await conn.execute(
+            "CREATE TEMP TABLE auction_snapshot (LIKE auction) ON COMMIT DROP"
+        )
+        await conn.copy_records_to_table(
+            "auction_snapshot", records=rows, columns=AUCTION_COLUMNS
+        )
+        await conn.execute(
+            """
+            INSERT INTO auction (auction_id, item_id, quantity, unit_price, time_left)
+            SELECT auction_id, item_id, quantity, unit_price, time_left FROM auction_snapshot
+            ON CONFLICT (auction_id) DO UPDATE
+               SET item_id    = EXCLUDED.item_id,
+                   quantity   = EXCLUDED.quantity,
+                   unit_price = EXCLUDED.unit_price,
+                   time_left  = EXCLUDED.time_left
+            """
+        )
+        await conn.execute(
+            """
+            DELETE FROM auction a
+             WHERE NOT EXISTS (SELECT 1 FROM auction_snapshot s WHERE s.auction_id = a.auction_id)
+            """
+        )
+    return len(rows)
+
+
+async def get_item_ids_to_refresh(
+    pool: asyncpg.Pool, max_age_days: int, limit: int
+) -> list[int]:
+    """Auctioned items with no lookup row yet (first), then ones older than max_age_days."""
+    return [
+        r["item_id"]
+        for r in await pool.fetch(
+            """
+            SELECT a.item_id
+              FROM (SELECT DISTINCT item_id FROM auction) a
+              LEFT JOIN item i ON i.item_id = a.item_id
+             WHERE i.item_id IS NULL
+                OR i.updated_at < now() - make_interval(days => $1)
+             ORDER BY i.updated_at NULLS FIRST
+             LIMIT $2
+            """,
+            max_age_days,
+            limit,
+        )
+    ]
+
+
+async def save_item(pool: asyncpg.Pool, item_id: int, data: dict) -> None:
+    """Upsert one item. An empty dict records 'no data' so it isn't re-fetched until stale."""
+    await pool.execute(
+        """
+        INSERT INTO item (item_id, name, quality, item_class, item_subclass,
+                          sell_price, purchase_price, raw, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, now())
+        ON CONFLICT (item_id) DO UPDATE
+           SET name           = EXCLUDED.name,
+               quality        = EXCLUDED.quality,
+               item_class     = EXCLUDED.item_class,
+               item_subclass  = EXCLUDED.item_subclass,
+               sell_price     = EXCLUDED.sell_price,
+               purchase_price = EXCLUDED.purchase_price,
+               raw            = EXCLUDED.raw,
+               updated_at     = now()
+        """,
+        item_id,
+        data.get("name"),
+        (data.get("quality") or {}).get("type"),
+        (data.get("item_class") or {}).get("name"),
+        (data.get("item_subclass") or {}).get("name"),
+        data.get("sell_price"),
+        data.get("purchase_price"),
+        json.dumps(data),
+    )
+
+
 async def get_player_main_or_first_character(
     pool: asyncpg.Pool, discord_id: int
 ) -> asyncpg.Record | None:
     """Return the player's main character, or the first linked one if no main is set."""
     return await pool.fetchrow(
         """
-        SELECT c.region, c.realm_slug, c.name
+        SELECT c.character_id, c.region, c.realm_slug, c.name
           FROM "character" c
           JOIN player p ON p.player_id = c.player_id
          WHERE p.discord_id = $1

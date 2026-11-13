@@ -1,0 +1,70 @@
+[
+    {
+        "character": {
+            "href": "https://us.api.blizzard.com/profile/wow/character/doge-dynasty?namespace=profile-forever-us"
+        },
+        "protected_character": {
+            "href": "https://us.api.blizzard.com/profile/user/wow/protected-character/6932-7673539?namespace=profile-forever-us"
+        },
+        "name": "Doge",
+        "id": 7673539,
+        "playable_class": {
+            "key": {
+                "href": "https://us.api.blizzard.com/data/wow/playable-class/1?namespace=static-1.60.1_70399-forever-us"
+            },
+            "name": "Warrior",
+            "id": 1
+        },
+        "playable_race": {
+            "key": {
+                "href": "https://us.api.blizzard.com/data/wow/playable-race/6?namespace=static-1.60.1_70399-forever-us"
+            },
+            "name": "Tauren",
+            "id": 6
+        },
+        "gender": {
+            "type": "MALE",
+            "name": "Male"
+        },
+        "faction": {
+            "type": "HORDE",
+            "name": "Horde"
+        },
+        "level": 25,
+        "surname": "Dynasty"
+    },
+    {
+        "character": {
+            "href": "https://us.api.blizzard.com/profile/wow/character/bo-shankles?namespace=profile-forever-us"
+        },
+        "protected_character": {
+            "href": "https://us.api.blizzard.com/profile/user/wow/protected-character/6932-19331739?namespace=profile-forever-us"
+        },
+        "name": "Bo",
+        "id": 19331739,
+        "playable_class": {
+            "key": {
+                "href": "https://us.api.blizzard.com/data/wow/playable-class/4?namespace=static-1.60.1_70399-forever-us"
+            },
+            "name": "Rogue",
+            "id": 4
+        },
+        "playable_race": {
+            "key": {
+                "href": "https://us.api.blizzard.com/data/wow/playable-race/5?namespace=static-1.60.1_70399-forever-us"
+            },
+            "name": "Undead",
+            "id": 5
+        },
+        "gender": {
+            "type": "MALE",
+            "name": "Male"
+        },
+        "faction": {
+            "type": "HORDE",
+            "name": "Horde"
+        },
+        "level": 12,
+        "surname": "Shankles"
+    }
+]
