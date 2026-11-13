@@ -203,7 +203,6 @@ async def save_link(
             link["consent_version"],
             link["consented_at"],
         )
-        logging.info(characters)
         for c in characters:
             realm_slug = c.get("realm", {}).get("slug", "")
             name = c.get("name", "N/A") + " " + c.get("surname", "")
