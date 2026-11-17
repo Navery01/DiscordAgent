@@ -10,3 +10,9 @@ services:
     ports:
       # Link server: reachable only from the host (point the Cloudflare Tunnel here).
       - "127.0.0.1:8082:8082"
+    networks:
+      - discord-bot-net
+
+networks:
+  discord-bot-net:
+    external: true

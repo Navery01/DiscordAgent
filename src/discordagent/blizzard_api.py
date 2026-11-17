@@ -138,12 +138,25 @@ class BlizzardApiClient:
             f"/profile/wow/character/{safe_realm}/{character_slug(character_name)}",
         )
 
-    async def get_character_equipment(self, region: str, character_name: str) -> dict:
-        """Fetch a character's equipped items."""
+    async def _get_character_section(
+        self, region: str, character_name: str, section: str
+    ) -> dict:
         return await self.get_profile_json(
             region,
-            f"/profile/wow/character/{character_slug(character_name)}/equipment",
+            f"/profile/wow/character/{character_slug(character_name)}/{section}",
         )
+
+    async def get_character_equipment(self, region: str, character_name: str) -> dict:
+        """Fetch a character's equipped items."""
+        return await self._get_character_section(region, character_name, "equipment")
+
+    async def get_character_statistics(self, region: str, character_name: str) -> dict:
+        """Fetch a character's combat stats (primary stats, crit, haste, ...)."""
+        return await self._get_character_section(region, character_name, "statistics")
+
+    async def get_character_professions(self, region: str, character_name: str) -> dict:
+        """Fetch a character's primary and secondary professions."""
+        return await self._get_character_section(region, character_name, "professions")
 
     async def get_commodities(self, region: str, ruleset_id: int, auction_house_id: int) -> dict:
         """Fetch the current commodity auctions for one auction house (refreshed hourly by Blizzard)."""
