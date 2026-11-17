@@ -6,7 +6,7 @@ import logging
 import anthropic
 import discord
 
-from . import server_tools
+from . import character_tools, server_tools
 
 log = logging.getLogger(__name__)
 
@@ -323,6 +323,7 @@ You have access to these tools:
 - set_channel_permissions, set_category_permissions — manage access control
 - send_message — post messages to any channel
 - update_server — rename the server
+- get_main_character_details — inspect the requesting user's main WoW character (gear, stats, professions)
 
 **Guidelines:**
 - Always call get_server_info first if you need to know the current state before acting
@@ -345,9 +346,19 @@ MAX_ITERATIONS = 60
 
 
 class ServerSetupAgent:
-    def __init__(self, guild: discord.Guild, progress_channel: discord.TextChannel):
+    def __init__(
+        self,
+        guild: discord.Guild,
+        progress_channel: discord.TextChannel,
+        requester_id: int | None = None,
+        db=None,
+        blizzard=None,
+    ):
         self.guild = guild
         self.progress_channel = progress_channel
+        self.requester_id = requester_id
+        self.db = db
+        self.blizzard = blizzard
         self.client = anthropic.AsyncAnthropic()
 
     async def _post(self, text: str) -> None:
@@ -412,6 +423,12 @@ class ServerSetupAgent:
             "update_server": lambda: server_tools.update_server(
                 guild,
                 tool_input.get("name"),
+            ),
+            "get_main_character_details": lambda: character_tools.get_main_character_details(
+                self.db,
+                self.blizzard,
+                self.requester_id,
+                tool_input.get("sections"),
             ),
         }
 
@@ -570,7 +587,7 @@ class ServerSetupAgent:
                     max_tokens=2048,
                     thinking={"type": "adaptive"},
                     system=TASK_SYSTEM_PROMPT,
-                    tools=TOOLS,
+                    tools=[*TOOLS, character_tools.CHARACTER_TOOL],
                     messages=messages,
                 )
             except anthropic.APIError as e:

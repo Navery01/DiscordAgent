@@ -336,7 +336,13 @@ async def run_task(interaction: discord.Interaction, agent: str):
     )
 
     try:
-        agent_instance = ServerSetupAgent(guild=guild, progress_channel=channel)
+        agent_instance = ServerSetupAgent(
+            guild=guild,
+            progress_channel=channel,
+            requester_id=interaction.user.id,
+            db=bot.db,
+            blizzard=bot.blizzard,
+        )
         result = await agent_instance.run_task(agent)
         await channel.send(f"✅ {result}")
     except Exception as e:
