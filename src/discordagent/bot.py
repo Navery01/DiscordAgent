@@ -22,6 +22,27 @@ from .link_server import (
 
 log = logging.getLogger(__name__)
 
+DISCORD_MAX_LEN = 2000
+
+
+def chunk_message(text: str, limit: int = DISCORD_MAX_LEN) -> list[str]:
+    """Split text into pieces within Discord's message limit, preferring newlines."""
+    chunks = []
+    while len(text) > limit:
+        split_at = text[:limit].rfind("\n")
+        if split_at <= 0:
+            split_at = limit
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+async def send_chunked(destination, text: str) -> None:
+    for chunk in chunk_message(text):
+        await destination.send(chunk)
+
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -344,10 +365,10 @@ async def run_task(interaction: discord.Interaction, agent: str):
             blizzard=bot.blizzard,
         )
         result = await agent_instance.run_task(agent)
-        await channel.send(f"✅ {result}")
+        await send_chunked(channel, f"✅ {result}")
     except Exception as e:
         log.exception("/agent failed | guild=%s task=%r", guild.name, agent)
-        await channel.send(f"❌ **Error:** {e}")
+        await send_chunked(channel, f"❌ **Error:** {e}")
         raise
 
 
@@ -400,18 +421,19 @@ async def setup_server(
         agent = ServerSetupAgent(guild=guild, progress_channel=channel)
         summary = await agent.run(description)
 
-        await channel.send(
+        await send_chunked(
+            channel,
             f"## ✅ Setup Complete!\n\n"
             f"{summary}\n\n"
             f"> **Note:** Existing channels and roles were preserved. "
-            f"You may want to manually remove any old ones that are no longer needed."
+            f"You may want to manually remove any old ones that are no longer needed.",
         )
 
     except Exception as e:
         log.exception(
             "/setup failed | guild=%s description=%r", guild.name, description
         )
-        await channel.send(f"❌ **Setup failed:** {e}")
+        await send_chunked(channel, f"❌ **Setup failed:** {e}")
         raise
 
 
@@ -471,15 +493,7 @@ async def setup_preview(
     header = "## 📋 Setup Preview\n*Run `/setup` to apply this structure.*\n\n"
     full_text = header + preview_text
 
-    while full_text:
-        if len(full_text) <= 2000:
-            await interaction.followup.send(full_text)
-            break
-        split_at = full_text[:2000].rfind("\n")
-        if split_at <= 0:
-            split_at = 2000
-        await interaction.followup.send(full_text[:split_at])
-        full_text = full_text[split_at:].lstrip()
+    await send_chunked(interaction.followup, full_text)
 
 
 def main():
