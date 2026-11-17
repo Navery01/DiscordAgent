@@ -473,7 +473,7 @@ class ServerSetupAgent:
                     model="claude-opus-4-6",
                     max_tokens=4096,
                     thinking={"type": "adaptive"},
-                    system=SYSTEM_PROMPT,
+                    system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
                     tools=TOOLS,
                     messages=messages,
                 )
@@ -586,7 +586,7 @@ class ServerSetupAgent:
                     model="claude-opus-4-6",
                     max_tokens=2048,
                     thinking={"type": "adaptive"},
-                    system=TASK_SYSTEM_PROMPT,
+                    system=[{"type": "text", "text": TASK_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
                     tools=[*TOOLS, character_tools.CHARACTER_TOOL],
                     messages=messages,
                 )
