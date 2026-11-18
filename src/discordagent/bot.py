@@ -415,7 +415,7 @@ async def lfg_create(
     player = await lfg_require_player(interaction)
     if player is None:
         return
-    if not character.isdigit():
+    if not character:
         await interaction.response.send_message(
             "Pick one of your linked characters from the list.", ephemeral=True
         )
@@ -444,7 +444,7 @@ async def lfg_create(
             mode=signups.value,
             slots=slots,
             size=size,
-            host_character_id=int(character),
+            host_character_id=character,
             host_role=role.value,
         )
     except lfg.LfgError as e:
@@ -474,14 +474,14 @@ async def lfg_join(
     player = await lfg_require_player(interaction)
     if player is None:
         return
-    if not (listing.isdigit() and character.isdigit()):
+    if not (listing.isdigit() and character):
         await interaction.response.send_message(
             "Pick a listing and character from the suggestions.", ephemeral=True
         )
         return
     try:
         await lfg.sign_up(
-            bot.db, int(listing), player["player_id"], int(character), role.value
+            bot.db, int(listing), player["player_id"], character, role.value
         )
     except lfg.LfgError as e:
         await interaction.response.send_message(str(e), ephemeral=True)
@@ -617,7 +617,7 @@ async def lfg_close_autocomplete(
     rows = await bot.db.fetch(
         """
         SELECT l.listing_id, l.kind, l.activity
-          FROM lfg_listing l JOIN player p ON p.player_id = l.host_id
+          FROM lfg_listing l JOIN player p ON p.player_id::text = l.host_id
          WHERE p.discord_id = $1 AND l.guild_id = $2 AND l.status = 'open'
          ORDER BY l.created_at DESC LIMIT 25
         """,

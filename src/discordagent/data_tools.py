@@ -80,34 +80,8 @@ CREATE TABLE IF NOT EXISTS item (
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- Looking-for-group listings (dungeons and leveling). 'roles' listings cap each role;
--- 'open' listings only cap the total party size.
-CREATE TABLE IF NOT EXISTS lfg_listing (
-    listing_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    host_id     bigint NOT NULL REFERENCES player ON DELETE CASCADE,
-    guild_id    bigint NOT NULL,
-    channel_id  bigint,
-    message_id  bigint,
-    kind        text NOT NULL CHECK (kind IN ('dungeon', 'leveling')),
-    activity    text NOT NULL,
-    notes       text,
-    mode        text NOT NULL CHECK (mode IN ('roles', 'open')),
-    tanks       integer NOT NULL DEFAULT 0,
-    healers     integer NOT NULL DEFAULT 0,
-    dps         integer NOT NULL DEFAULT 0,
-    size        integer NOT NULL,
-    status      text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
-    created_at  timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS lfg_signup (
-    listing_id   bigint NOT NULL REFERENCES lfg_listing ON DELETE CASCADE,
-    player_id    bigint NOT NULL REFERENCES player ON DELETE CASCADE,
-    character_id bigint NOT NULL REFERENCES "character" ON DELETE CASCADE,
-    role         text NOT NULL CHECK (role IN ('tank', 'healer', 'dps')),
-    signed_up_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (listing_id, player_id)
-);
+-- The lfg_listing and lfg_signup tables live in sql/create_lfg_tables.sql: they have foreign keys
+-- to tables the bot's role doesn't own, so an admin has to create them.
 
 CREATE TABLE IF NOT EXISTS oauth_link_state (
     state           text PRIMARY KEY,
@@ -249,12 +223,19 @@ async def save_link(
 
 
 async def delete_player(pool: asyncpg.Pool, discord_id: int) -> bool:
-    """Delete a player and (via cascade) all of their characters."""
-    return bool(
-        await pool.fetchval(
-            "DELETE FROM player WHERE discord_id = $1 RETURNING true", discord_id
+    """Delete a player, their LFG listings and signups, and (via cascade) their characters."""
+    async with pool.acquire() as conn, conn.transaction():
+        # lfg tables have no FK to player, so they're cleaned up here.
+        player_id = await conn.fetchval(
+            "SELECT player_id FROM player WHERE discord_id = $1", discord_id
         )
-    )
+        if player_id is None:
+            return False
+        # The lfg tables store IDs as text so they work whatever type player_id has.
+        await conn.execute("DELETE FROM lfg_listing WHERE host_id = $1", str(player_id))
+        await conn.execute("DELETE FROM lfg_signup WHERE player_id = $1", str(player_id))
+        await conn.execute("DELETE FROM player WHERE player_id = $1", player_id)
+    return True
 
 
 async def get_player_characters(

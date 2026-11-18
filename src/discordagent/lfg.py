@@ -31,7 +31,7 @@ async def get_linked_player(pool: asyncpg.Pool, discord_id: int) -> asyncpg.Reco
     """The player row, only if they have linked at least one character."""
     return await pool.fetchrow(
         """
-        SELECT p.player_id, p.discord_id
+        SELECT p.player_id::text AS player_id, p.discord_id
           FROM player p
          WHERE p.discord_id = $1
            AND EXISTS (SELECT 1 FROM "character" c WHERE c.player_id = p.player_id)
@@ -44,7 +44,7 @@ async def get_characters(pool: asyncpg.Pool, discord_id: int) -> list[asyncpg.Re
     """A player's linked characters, main first."""
     return await pool.fetch(
         """
-        SELECT c.character_id, c.name, c.realm_slug, c.is_main, cl.name AS class_name
+        SELECT c.character_id::text AS character_id, c.name, c.realm_slug, c.is_main, cl.name AS class_name
           FROM "character" c
           JOIN player p ON p.player_id = c.player_id
           JOIN class cl ON cl.class_id = c.class_id
@@ -55,9 +55,9 @@ async def get_characters(pool: asyncpg.Pool, discord_id: int) -> list[asyncpg.Re
     )
 
 
-async def _owned_character(conn, player_id: int, character_id: int) -> asyncpg.Record:
+async def _owned_character(conn, player_id: str, character_id: str) -> asyncpg.Record:
     char = await conn.fetchrow(
-        'SELECT character_id FROM "character" WHERE character_id = $1 AND player_id = $2',
+        'SELECT 1 FROM "character" WHERE character_id::text = $1 AND player_id::text = $2',
         character_id,
         player_id,
     )
@@ -66,7 +66,7 @@ async def _owned_character(conn, player_id: int, character_id: int) -> asyncpg.R
     return char
 
 
-async def _check_room(conn, listing: asyncpg.Record, role: str, exclude_player: int) -> None:
+async def _check_room(conn, listing: asyncpg.Record, role: str, exclude_player: str) -> None:
     """Raise LfgError if the listing can't take another member in this role."""
     signups = await conn.fetch(
         "SELECT role FROM lfg_signup WHERE listing_id = $1 AND player_id <> $2",
@@ -84,7 +84,7 @@ async def _check_room(conn, listing: asyncpg.Record, role: str, exclude_player: 
 async def create_listing(
     pool: asyncpg.Pool,
     *,
-    host_id: int,
+    host_id: str,
     guild_id: int,
     kind: str,
     activity: str,
@@ -92,7 +92,7 @@ async def create_listing(
     mode: str,
     slots: dict[str, int],
     size: int,
-    host_character_id: int,
+    host_character_id: str,
     host_role: str,
 ) -> asyncpg.Record:
     async with pool.acquire() as conn, conn.transaction():
@@ -126,7 +126,7 @@ async def get_listing(pool: asyncpg.Pool, listing_id: int) -> asyncpg.Record | N
     return await pool.fetchrow(
         """
         SELECT l.*, p.discord_id AS host_discord_id
-          FROM lfg_listing l JOIN player p ON p.player_id = l.host_id
+          FROM lfg_listing l JOIN player p ON p.player_id::text = l.host_id
          WHERE l.listing_id = $1
         """,
         listing_id,
@@ -138,8 +138,8 @@ async def get_signups(pool: asyncpg.Pool, listing_id: int) -> list[asyncpg.Recor
         """
         SELECT s.role, s.player_id, p.discord_id, c.name, c.is_main, cl.name AS class_name
           FROM lfg_signup s
-          JOIN player p ON p.player_id = s.player_id
-          JOIN "character" c ON c.character_id = s.character_id
+          JOIN player p ON p.player_id::text = s.player_id
+          JOIN "character" c ON c.character_id::text = s.character_id
           JOIN class cl ON cl.class_id = c.class_id
          WHERE s.listing_id = $1
          ORDER BY s.signed_up_at
@@ -164,7 +164,7 @@ async def list_open_listings(
 
 
 async def sign_up(
-    pool: asyncpg.Pool, listing_id: int, player_id: int, character_id: int, role: str
+    pool: asyncpg.Pool, listing_id: int, player_id: str, character_id: str, role: str
 ) -> asyncpg.Record:
     """Join (or switch character/role on) a listing. One signup per player."""
     async with pool.acquire() as conn, conn.transaction():
@@ -187,7 +187,7 @@ async def sign_up(
     return listing
 
 
-async def leave(pool: asyncpg.Pool, listing_id: int, player_id: int) -> None:
+async def leave(pool: asyncpg.Pool, listing_id: int, player_id: str) -> None:
     async with pool.acquire() as conn, conn.transaction():
         listing = await conn.fetchrow(
             "SELECT host_id FROM lfg_listing WHERE listing_id = $1 FOR UPDATE", listing_id
@@ -204,7 +204,7 @@ async def leave(pool: asyncpg.Pool, listing_id: int, player_id: int) -> None:
             raise LfgError("You aren't signed up for that listing.")
 
 
-async def close_listing(pool: asyncpg.Pool, listing_id: int, player_id: int) -> asyncpg.Record:
+async def close_listing(pool: asyncpg.Pool, listing_id: int, player_id: str) -> asyncpg.Record:
     listing = await pool.fetchrow(
         "SELECT * FROM lfg_listing WHERE listing_id = $1", listing_id
     )
