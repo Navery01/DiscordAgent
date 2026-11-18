@@ -21,9 +21,13 @@ CREATE TABLE IF NOT EXISTS guild.lfg_listing (
     healers     integer NOT NULL DEFAULT 0,
     dps         integer NOT NULL DEFAULT 0,
     size        integer NOT NULL,
+    starts_at   timestamptz,
     status      text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
     created_at  timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE guild.lfg_listing
+    ADD COLUMN IF NOT EXISTS starts_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS guild.lfg_signup (
     listing_id   bigint NOT NULL REFERENCES guild.lfg_listing ON DELETE CASCADE,

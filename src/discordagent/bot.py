@@ -2,6 +2,7 @@
 
 import logging
 import os
+from datetime import datetime, timezone
 
 import aiohttp
 import asyncpg
@@ -344,6 +345,29 @@ ROLE_CHOICES = [
 ]
 
 
+def parse_lfg_start_time(value: str) -> datetime | None:
+    """Parse an LFG start time. Accepts ISO-8601 and 'YYYY-MM-DD HH:MM' (UTC)."""
+    text = value.strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    dt = None
+    for fmt in (None, "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            if fmt is None:
+                dt = datetime.fromisoformat(normalized)
+            else:
+                dt = datetime.strptime(normalized, fmt)
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 async def lfg_require_player(interaction: discord.Interaction):
     """Return the linked player, or reply with instructions and return None."""
     if bot.db is None:
@@ -381,6 +405,7 @@ async def lfg_refresh_message(listing_id: int) -> None:
     activity="Dungeon name or leveling zone/goal",
     character="The character you'll play (main or alt)",
     role="The role you'll play",
+    start_time="Start time (UTC). Example: 2026-11-18 20:30 or 2026-11-18T20:30:00Z",
     signups="Roles: fixed slots per role. Open: anyone can join up to the party size",
     notes="Level range, requirements, timing, etc.",
     tanks="Tank slots (role signups only, default 1)",
@@ -405,6 +430,7 @@ async def lfg_create(
     activity: app_commands.Range[str, 1, 100],
     character: str,
     role: app_commands.Choice[str],
+    start_time: app_commands.Range[str, 10, 40],
     signups: app_commands.Choice[str],
     notes: app_commands.Range[str, 0, 500] | None = None,
     tanks: app_commands.Range[int, 0, 5] = 1,
@@ -418,6 +444,18 @@ async def lfg_create(
     if not character:
         await interaction.response.send_message(
             "Pick one of your linked characters from the list.", ephemeral=True
+        )
+        return
+    starts_at = parse_lfg_start_time(start_time)
+    if starts_at is None:
+        await interaction.response.send_message(
+            "Invalid start time. Use `YYYY-MM-DD HH:MM` (UTC) or ISO-8601, e.g. `2026-11-18T20:30:00Z`.",
+            ephemeral=True,
+        )
+        return
+    if starts_at <= datetime.now(timezone.utc):
+        await interaction.response.send_message(
+            "Start time must be in the future.", ephemeral=True
         )
         return
 
@@ -444,6 +482,7 @@ async def lfg_create(
             mode=signups.value,
             slots=slots,
             size=size,
+            starts_at=starts_at,
             host_character_id=character,
             host_role=role.value,
         )
@@ -560,11 +599,12 @@ async def lfg_list(
         if r["channel_id"] and r["message_id"]:
             url = f"https://discord.com/channels/{r['guild_id']}/{r['channel_id']}/{r['message_id']}"
             link_part = f" — [view]({url})"
+        start_part = f" — starts <t:{int(r['starts_at'].timestamp())}:F>" if r["starts_at"] else ""
         lines.append(
             f"**#{r['listing_id']}** {r['kind'].capitalize()}: "
             f"{discord.utils.escape_markdown(r['activity'])} "
             f"({r['members']}/{r['size']}, {'open' if r['mode'] == 'open' else 'roles'})"
-            f"{link_part}"
+            f"{start_part}{link_part}"
         )
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
@@ -599,7 +639,11 @@ async def lfg_listing_autocomplete(
     current = current.strip().lower()
     return [
         app_commands.Choice(
-            name=f"#{r['listing_id']} {r['kind']}: {r['activity']} ({r['members']}/{r['size']})"[:100],
+            name=(
+                f"#{r['listing_id']} {r['kind']}: {r['activity']} "
+                f"({r['members']}/{r['size']})"
+                + (f" @ {r['starts_at']:%m-%d %H:%M} UTC" if r["starts_at"] else "")
+            )[:100],
             value=str(r["listing_id"]),
         )
         for r in rows
