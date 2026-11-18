@@ -94,7 +94,7 @@ async def create_listing(
     mode: str,
     slots: dict[str, int],
     size: int,
-    starts_at: datetime,
+    starts_at: datetime | None,
     host_character_id: str,
     host_role: str,
 ) -> asyncpg.Record:

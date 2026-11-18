@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC
 
 import aiohttp
 import asyncpg
@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from . import auction_house, data_tools, lfg
+from . import auction_house, data_tools, lfg, lfg_time
 from .agent import ServerSetupAgent
 from .blizzard_api import BlizzardApiClient
 from .link_server import (
@@ -345,27 +345,10 @@ ROLE_CHOICES = [
 ]
 
 
-def parse_lfg_start_time(value: str) -> datetime | None:
-    """Parse an LFG start time. Accepts ISO-8601 and 'YYYY-MM-DD HH:MM' (UTC)."""
-    text = value.strip()
-    if not text:
-        return None
-    normalized = text.replace("Z", "+00:00")
-    dt = None
-    for fmt in (None, "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-        try:
-            if fmt is None:
-                dt = datetime.fromisoformat(normalized)
-            else:
-                dt = datetime.strptime(normalized, fmt)
-            break
-        except ValueError:
-            continue
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+START_TIME_HELP = (
+    "Try `8pm`, `tomorrow 7:30pm`, `fri 9pm`, `in 45m`, `now` or `2026-11-20 20:30`, "
+    "or pick a suggestion from the list."
+)
 
 
 async def lfg_require_player(interaction: discord.Interaction):
@@ -383,11 +366,26 @@ async def lfg_require_player(interaction: discord.Interaction):
     return player
 
 
-async def lfg_refresh_message(listing_id: int) -> None:
-    """Re-render a listing's posted message; best-effort."""
+CANT_SEE_CHANNEL = (
+    "The bot can't see this channel, so it can't update the listing post when people "
+    "join or leave. Ask an admin to give the bot **View Channel** here."
+)
+
+
+async def lfg_refresh_message(listing_id: int) -> str | None:
+    """Re-render a listing's posted message. Returns a user-facing reason if it failed.
+
+    The listing is posted as an interaction response, which needs no channel
+    permissions, but editing it later goes through the channel API, so the bot
+    must be able to see the channel.
+    """
     listing = await lfg.get_listing(bot.db, listing_id)
-    if listing is None or not listing["channel_id"] or not listing["message_id"]:
-        return
+    if listing is None:
+        log.warning("LFG refresh: listing %s not found (host player missing?)", listing_id)
+        return "The listing post couldn't be updated."
+    if not listing["channel_id"] or not listing["message_id"]:
+        log.warning("LFG refresh: listing %s has no stored message", listing_id)
+        return "The listing post couldn't be found, so it wasn't updated."
     signups = await lfg.get_signups(bot.db, listing_id)
     try:
         channel = bot.get_channel(listing["channel_id"]) or await bot.fetch_channel(
@@ -395,8 +393,26 @@ async def lfg_refresh_message(listing_id: int) -> None:
         )
         message = channel.get_partial_message(listing["message_id"])
         await message.edit(embed=lfg.build_embed(listing, signups))
-    except discord.HTTPException:
-        log.warning("Couldn't update LFG message for listing %s", listing_id)
+    except discord.Forbidden as e:
+        log.warning(
+            "LFG refresh: no access to channel %s for listing %s: %s",
+            listing["channel_id"], listing_id, e,
+        )
+        return CANT_SEE_CHANNEL
+    except discord.NotFound as e:
+        log.warning(
+            "LFG refresh: message %s/%s for listing %s is gone: %s",
+            listing["channel_id"], listing["message_id"], listing_id, e,
+        )
+        return "The listing post was deleted, so it wasn't updated. Use `/lfg list` to see the group."
+    except Exception:
+        log.exception("LFG refresh failed for listing %s", listing_id)
+        return "The listing post couldn't be updated (error logged)."
+    return None
+
+
+def with_refresh_note(text: str, problem: str | None) -> str:
+    return f"{text}\n-# ⚠️ {problem}" if problem else text
 
 
 @lfg_group.command(name="create", description="Post a dungeon or leveling group listing")
@@ -405,7 +421,8 @@ async def lfg_refresh_message(listing_id: int) -> None:
     activity="Dungeon name or leveling zone/goal",
     character="The character you'll play (main or alt)",
     role="The role you'll play",
-    start_time="Start time (UTC). Example: 2026-11-18 20:30 or 2026-11-18T20:30:00Z",
+    start_time="Optional. Pick a suggestion or type e.g. 8pm, tomorrow 7:30pm, in 45m",
+    timezone="Timezone for the start time (default UTC). E.g. US Eastern, EST, Europe/London",
     signups="Roles: fixed slots per role. Open: anyone can join up to the party size",
     notes="Level range, requirements, timing, etc.",
     tanks="Tank slots (role signups only, default 1)",
@@ -430,8 +447,9 @@ async def lfg_create(
     activity: app_commands.Range[str, 1, 100],
     character: str,
     role: app_commands.Choice[str],
-    start_time: app_commands.Range[str, 10, 40],
     signups: app_commands.Choice[str],
+    start_time: app_commands.Range[str, 1, 100] | None = None,
+    timezone: app_commands.Range[str, 1, 64] | None = None,
     notes: app_commands.Range[str, 0, 500] | None = None,
     tanks: app_commands.Range[int, 0, 5] = 1,
     healers: app_commands.Range[int, 0, 5] = 1,
@@ -446,13 +464,23 @@ async def lfg_create(
             "Pick one of your linked characters from the list.", ephemeral=True
         )
         return
-    starts_at = parse_lfg_start_time(start_time)
-    if starts_at is None:
+    tz = lfg_time.resolve_timezone(timezone)
+    if timezone and tz is None:
         await interaction.response.send_message(
-            "Invalid start time. Use `YYYY-MM-DD HH:MM` (UTC) or ISO-8601, e.g. `2026-11-18T20:30:00Z`.",
+            f"Unknown timezone `{timezone}`. Pick one from the list, or use something like "
+            "`EST`, `UTC-5` or `Europe/London`.",
             ephemeral=True,
         )
         return
+    starts_at = None
+    if start_time and start_time.strip():
+        starts_at = lfg_time.parse_start_time(start_time, tz or UTC)
+        if starts_at is None:
+            await interaction.response.send_message(
+                f"Couldn't read the start time `{start_time}`. {START_TIME_HELP}",
+                ephemeral=True,
+            )
+            return
 
     if signups.value == "roles":
         slots = {"tank": tanks, "healer": healers, "dps": dps}
@@ -490,6 +518,12 @@ async def lfg_create(
     await interaction.response.send_message(embed=lfg.build_embed(full, members))
     message = await interaction.original_response()
     await lfg.set_message(bot.db, listing["listing_id"], message.channel.id, message.id)
+    if not interaction.app_permissions.view_channel:
+        log.warning(
+            "LFG create: bot lacks View Channel in %s; listing %s won't auto-update",
+            interaction.channel_id, listing["listing_id"],
+        )
+        await interaction.followup.send(CANT_SEE_CHANNEL, ephemeral=True)
 
 
 @lfg_group.command(name="join", description="Sign up for a group with your main or an alt")
@@ -520,10 +554,11 @@ async def lfg_join(
     except lfg.LfgError as e:
         await interaction.response.send_message(str(e), ephemeral=True)
         return
-    await interaction.response.send_message(
-        f"You're signed up as **{role.name}**.", ephemeral=True
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    problem = await lfg_refresh_message(int(listing))
+    await interaction.followup.send(
+        with_refresh_note(f"You're signed up as **{role.name}**.", problem), ephemeral=True
     )
-    await lfg_refresh_message(int(listing))
 
 
 @lfg_group.command(name="leave", description="Withdraw from a group")
@@ -542,8 +577,9 @@ async def lfg_leave(interaction: discord.Interaction, listing: str):
     except lfg.LfgError as e:
         await interaction.response.send_message(str(e), ephemeral=True)
         return
-    await interaction.response.send_message("You left the group.", ephemeral=True)
-    await lfg_refresh_message(int(listing))
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    problem = await lfg_refresh_message(int(listing))
+    await interaction.followup.send(with_refresh_note("You left the group.", problem), ephemeral=True)
 
 
 @lfg_group.command(name="close", description="Close one of your group listings")
@@ -562,8 +598,9 @@ async def lfg_close(interaction: discord.Interaction, listing: str):
     except lfg.LfgError as e:
         await interaction.response.send_message(str(e), ephemeral=True)
         return
-    await interaction.response.send_message("Listing closed.", ephemeral=True)
-    await lfg_refresh_message(int(listing))
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    problem = await lfg_refresh_message(int(listing))
+    await interaction.followup.send(with_refresh_note("Listing closed.", problem), ephemeral=True)
 
 
 @lfg_group.command(name="list", description="Show open groups on this server")
@@ -682,6 +719,70 @@ async def lfg_activity_autocomplete(
         for d in lfg.DUNGEON_SUGGESTIONS
         if current in d.lower()
     ][:25]
+
+
+@lfg_create.autocomplete("start_time")
+async def lfg_start_time_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Quick picks, plus a live preview of whatever the user has typed so far.
+
+    Choice values are re-parsed on submit using the final timezone option, so
+    changing the timezone after picking a time still does the right thing.
+    """
+    tz = lfg_time.resolve_timezone(interaction.namespace.timezone) or UTC
+    now = discord.utils.utcnow()
+    typed = current.strip()
+    choices: list[app_commands.Choice[str]] = []
+    if typed:
+        parsed = lfg_time.parse_start_time(typed, tz, now)
+        if parsed is not None:
+            label = f"{lfg_time.format_local(parsed, tz, now)} ({lfg_time.relative(parsed, now)})"
+        else:
+            label = f"Can't read “{typed}”. Try 8pm, tomorrow 7:30pm, fri 9pm, in 45m"
+        choices.append(app_commands.Choice(name=label[:100], value=typed[:100]))
+    needle = typed.lower()
+    for label, value in lfg_time.time_suggestions(tz, now):
+        if not needle or needle in label.lower() or value.startswith(needle):
+            choices.append(app_commands.Choice(name=label, value=value))
+    return choices[:25]
+
+
+@lfg_create.autocomplete("timezone")
+async def lfg_timezone_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    now = discord.utils.utcnow()
+    needle = current.strip().lower().replace(" ", "_")
+    choices: list[app_commands.Choice[str]] = []
+    seen: set[str] = set()
+
+    def add(label: str, zone: str) -> None:
+        tz = lfg_time.resolve_timezone(zone)
+        if tz is None or zone in seen:
+            return
+        seen.add(zone)
+        clock = now.astimezone(tz).strftime("%I:%M %p").lstrip("0")
+        name = f"{label} — {lfg_time.tz_label(tz, now)}, now {clock}"
+        choices.append(app_commands.Choice(name=name[:100], value=zone))
+
+    # Typed an abbreviation or offset like "EST" or "UTC+2": offer it first.
+    typed = current.strip()
+    if typed.lower() in lfg_time.ABBREVIATIONS:
+        zone = lfg_time.ABBREVIATIONS[typed.lower()]
+        add(f"{typed.upper()} ({zone})", zone)
+    elif lfg_time.resolve_timezone(typed) is not None:
+        add(typed, typed)
+    for label, zone in lfg_time.COMMON_TIMEZONES:
+        if not needle or needle in label.lower().replace(" ", "_") or needle in zone.lower():
+            add(f"{label} ({zone})" if label != zone else zone, zone)
+    if needle and len(choices) < 25:
+        for zone in lfg_time.all_zone_names():
+            if len(choices) >= 25:
+                break
+            if needle in zone.lower():
+                add(zone, zone)
+    return choices[:25]
 
 
 bot.tree.add_command(lfg_group)
