@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from . import auction_house, data_tools
+from . import auction_house, data_tools, lfg
 from .agent import ServerSetupAgent
 from .blizzard_api import BlizzardApiClient
 from .link_server import (
@@ -329,6 +329,323 @@ async def price_item_autocomplete(
     return [
         app_commands.Choice(name=r["name"][:100], value=str(r["item_id"])) for r in rows
     ]
+
+
+lfg_group = app_commands.Group(
+    name="lfg",
+    description="Looking for group: WoW Forever dungeons and leveling",
+    guild_only=True,
+)
+
+ROLE_CHOICES = [
+    app_commands.Choice(name="Tank", value="tank"),
+    app_commands.Choice(name="Healer", value="healer"),
+    app_commands.Choice(name="DPS", value="dps"),
+]
+
+
+async def lfg_require_player(interaction: discord.Interaction):
+    """Return the linked player, or reply with instructions and return None."""
+    if bot.db is None:
+        await interaction.response.send_message(
+            "Account linking isn't configured.", ephemeral=True
+        )
+        return None
+    player = await lfg.get_linked_player(bot.db, interaction.user.id)
+    if player is None:
+        await interaction.response.send_message(
+            "Link your Battle.net account with /link before using LFG.", ephemeral=True
+        )
+    return player
+
+
+async def lfg_refresh_message(listing_id: int) -> None:
+    """Re-render a listing's posted message; best-effort."""
+    listing = await lfg.get_listing(bot.db, listing_id)
+    if listing is None or not listing["channel_id"] or not listing["message_id"]:
+        return
+    signups = await lfg.get_signups(bot.db, listing_id)
+    try:
+        channel = bot.get_channel(listing["channel_id"]) or await bot.fetch_channel(
+            listing["channel_id"]
+        )
+        message = channel.get_partial_message(listing["message_id"])
+        await message.edit(embed=lfg.build_embed(listing, signups))
+    except discord.HTTPException:
+        log.warning("Couldn't update LFG message for listing %s", listing_id)
+
+
+@lfg_group.command(name="create", description="Post a dungeon or leveling group listing")
+@app_commands.describe(
+    kind="Dungeon or leveling group",
+    activity="Dungeon name or leveling zone/goal",
+    character="The character you'll play (main or alt)",
+    role="The role you'll play",
+    signups="Roles: fixed slots per role. Open: anyone can join up to the party size",
+    notes="Level range, requirements, timing, etc.",
+    tanks="Tank slots (role signups only, default 1)",
+    healers="Healer slots (role signups only, default 1)",
+    dps="DPS slots (role signups only, default 3)",
+    size="Party size (open signups only, default 5)",
+)
+@app_commands.choices(
+    kind=[
+        app_commands.Choice(name="Dungeon", value="dungeon"),
+        app_commands.Choice(name="Leveling", value="leveling"),
+    ],
+    role=ROLE_CHOICES,
+    signups=[
+        app_commands.Choice(name="Role slots", value="roles"),
+        app_commands.Choice(name="Open signups", value="open"),
+    ],
+)
+async def lfg_create(
+    interaction: discord.Interaction,
+    kind: app_commands.Choice[str],
+    activity: app_commands.Range[str, 1, 100],
+    character: str,
+    role: app_commands.Choice[str],
+    signups: app_commands.Choice[str],
+    notes: app_commands.Range[str, 0, 500] | None = None,
+    tanks: app_commands.Range[int, 0, 5] = 1,
+    healers: app_commands.Range[int, 0, 5] = 1,
+    dps: app_commands.Range[int, 0, 5] = 3,
+    size: app_commands.Range[int, 2, lfg.MAX_PARTY] = lfg.MAX_PARTY,
+):
+    player = await lfg_require_player(interaction)
+    if player is None:
+        return
+    if not character.isdigit():
+        await interaction.response.send_message(
+            "Pick one of your linked characters from the list.", ephemeral=True
+        )
+        return
+
+    if signups.value == "roles":
+        slots = {"tank": tanks, "healer": healers, "dps": dps}
+        size = sum(slots.values())
+        if not 2 <= size <= lfg.MAX_PARTY:
+            await interaction.response.send_message(
+                f"Role slots must add up to between 2 and {lfg.MAX_PARTY}.",
+                ephemeral=True,
+            )
+            return
+    else:
+        slots = {"tank": 0, "healer": 0, "dps": 0}
+
+    try:
+        listing = await lfg.create_listing(
+            bot.db,
+            host_id=player["player_id"],
+            guild_id=interaction.guild_id,
+            kind=kind.value,
+            activity=activity,
+            notes=notes or None,
+            mode=signups.value,
+            slots=slots,
+            size=size,
+            host_character_id=int(character),
+            host_role=role.value,
+        )
+    except lfg.LfgError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+
+    full = await lfg.get_listing(bot.db, listing["listing_id"])
+    members = await lfg.get_signups(bot.db, listing["listing_id"])
+    await interaction.response.send_message(embed=lfg.build_embed(full, members))
+    message = await interaction.original_response()
+    await lfg.set_message(bot.db, listing["listing_id"], message.channel.id, message.id)
+
+
+@lfg_group.command(name="join", description="Sign up for a group with your main or an alt")
+@app_commands.describe(
+    listing="The group to join",
+    character="The character to sign up with (main or alt)",
+    role="The role you'll play",
+)
+@app_commands.choices(role=ROLE_CHOICES)
+async def lfg_join(
+    interaction: discord.Interaction,
+    listing: str,
+    character: str,
+    role: app_commands.Choice[str],
+):
+    player = await lfg_require_player(interaction)
+    if player is None:
+        return
+    if not (listing.isdigit() and character.isdigit()):
+        await interaction.response.send_message(
+            "Pick a listing and character from the suggestions.", ephemeral=True
+        )
+        return
+    try:
+        await lfg.sign_up(
+            bot.db, int(listing), player["player_id"], int(character), role.value
+        )
+    except lfg.LfgError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"You're signed up as **{role.name}**.", ephemeral=True
+    )
+    await lfg_refresh_message(int(listing))
+
+
+@lfg_group.command(name="leave", description="Withdraw from a group")
+@app_commands.describe(listing="The group to leave")
+async def lfg_leave(interaction: discord.Interaction, listing: str):
+    player = await lfg_require_player(interaction)
+    if player is None:
+        return
+    if not listing.isdigit():
+        await interaction.response.send_message(
+            "Pick a listing from the suggestions.", ephemeral=True
+        )
+        return
+    try:
+        await lfg.leave(bot.db, int(listing), player["player_id"])
+    except lfg.LfgError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+    await interaction.response.send_message("You left the group.", ephemeral=True)
+    await lfg_refresh_message(int(listing))
+
+
+@lfg_group.command(name="close", description="Close one of your group listings")
+@app_commands.describe(listing="The listing to close")
+async def lfg_close(interaction: discord.Interaction, listing: str):
+    player = await lfg_require_player(interaction)
+    if player is None:
+        return
+    if not listing.isdigit():
+        await interaction.response.send_message(
+            "Pick a listing from the suggestions.", ephemeral=True
+        )
+        return
+    try:
+        await lfg.close_listing(bot.db, int(listing), player["player_id"])
+    except lfg.LfgError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+    await interaction.response.send_message("Listing closed.", ephemeral=True)
+    await lfg_refresh_message(int(listing))
+
+
+@lfg_group.command(name="list", description="Show open groups on this server")
+@app_commands.describe(kind="Only show dungeon or leveling groups")
+@app_commands.choices(
+    kind=[
+        app_commands.Choice(name="Dungeon", value="dungeon"),
+        app_commands.Choice(name="Leveling", value="leveling"),
+    ]
+)
+async def lfg_list(
+    interaction: discord.Interaction, kind: app_commands.Choice[str] | None = None
+):
+    if bot.db is None:
+        await interaction.response.send_message(
+            "Account linking isn't configured.", ephemeral=True
+        )
+        return
+    rows = await lfg.list_open_listings(
+        bot.db, interaction.guild_id, kind.value if kind else None
+    )
+    if not rows:
+        await interaction.response.send_message("No open groups right now.", ephemeral=True)
+        return
+    lines = []
+    for r in rows:
+        link_part = ""
+        if r["channel_id"] and r["message_id"]:
+            url = f"https://discord.com/channels/{r['guild_id']}/{r['channel_id']}/{r['message_id']}"
+            link_part = f" — [view]({url})"
+        lines.append(
+            f"**#{r['listing_id']}** {r['kind'].capitalize()}: "
+            f"{discord.utils.escape_markdown(r['activity'])} "
+            f"({r['members']}/{r['size']}, {'open' if r['mode'] == 'open' else 'roles'})"
+            f"{link_part}"
+        )
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@lfg_join.autocomplete("character")
+@lfg_create.autocomplete("character")
+async def lfg_character_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if bot.db is None:
+        return []
+    chars = await lfg.get_characters(bot.db, interaction.user.id)
+    current = current.strip().lower()
+    return [
+        app_commands.Choice(
+            name=f"{c['name']} ({c['class_name']}){' — main' if c['is_main'] else ''}"[:100],
+            value=str(c["character_id"]),
+        )
+        for c in chars
+        if current in c["name"].lower()
+    ][:25]
+
+
+@lfg_join.autocomplete("listing")
+@lfg_leave.autocomplete("listing")
+async def lfg_listing_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if bot.db is None:
+        return []
+    rows = await lfg.list_open_listings(bot.db, interaction.guild_id)
+    current = current.strip().lower()
+    return [
+        app_commands.Choice(
+            name=f"#{r['listing_id']} {r['kind']}: {r['activity']} ({r['members']}/{r['size']})"[:100],
+            value=str(r["listing_id"]),
+        )
+        for r in rows
+        if current in r["activity"].lower() or current.lstrip("#") == str(r["listing_id"])
+        or not current
+    ]
+
+
+@lfg_close.autocomplete("listing")
+async def lfg_close_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if bot.db is None:
+        return []
+    rows = await bot.db.fetch(
+        """
+        SELECT l.listing_id, l.kind, l.activity
+          FROM lfg_listing l JOIN player p ON p.player_id = l.host_id
+         WHERE p.discord_id = $1 AND l.guild_id = $2 AND l.status = 'open'
+         ORDER BY l.created_at DESC LIMIT 25
+        """,
+        interaction.user.id,
+        interaction.guild_id,
+    )
+    return [
+        app_commands.Choice(
+            name=f"#{r['listing_id']} {r['kind']}: {r['activity']}"[:100],
+            value=str(r["listing_id"]),
+        )
+        for r in rows
+    ]
+
+
+@lfg_create.autocomplete("activity")
+async def lfg_activity_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    current = current.strip().lower()
+    return [
+        app_commands.Choice(name=d, value=d)
+        for d in lfg.DUNGEON_SUGGESTIONS
+        if current in d.lower()
+    ][:25]
+
+
+bot.tree.add_command(lfg_group)
 
 
 @bot.tree.command(

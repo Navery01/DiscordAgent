@@ -80,6 +80,35 @@ CREATE TABLE IF NOT EXISTS item (
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
+-- Looking-for-group listings (dungeons and leveling). 'roles' listings cap each role;
+-- 'open' listings only cap the total party size.
+CREATE TABLE IF NOT EXISTS lfg_listing (
+    listing_id  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    host_id     bigint NOT NULL REFERENCES player ON DELETE CASCADE,
+    guild_id    bigint NOT NULL,
+    channel_id  bigint,
+    message_id  bigint,
+    kind        text NOT NULL CHECK (kind IN ('dungeon', 'leveling')),
+    activity    text NOT NULL,
+    notes       text,
+    mode        text NOT NULL CHECK (mode IN ('roles', 'open')),
+    tanks       integer NOT NULL DEFAULT 0,
+    healers     integer NOT NULL DEFAULT 0,
+    dps         integer NOT NULL DEFAULT 0,
+    size        integer NOT NULL,
+    status      text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS lfg_signup (
+    listing_id   bigint NOT NULL REFERENCES lfg_listing ON DELETE CASCADE,
+    player_id    bigint NOT NULL REFERENCES player ON DELETE CASCADE,
+    character_id bigint NOT NULL REFERENCES "character" ON DELETE CASCADE,
+    role         text NOT NULL CHECK (role IN ('tank', 'healer', 'dps')),
+    signed_up_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (listing_id, player_id)
+);
+
 CREATE TABLE IF NOT EXISTS oauth_link_state (
     state           text PRIMARY KEY,
     discord_id      bigint NOT NULL,
