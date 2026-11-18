@@ -1,5 +1,7 @@
 """Looking-for-group listings for WoW Forever dungeons and leveling (Postgres, schema `guild`)."""
 
+from datetime import datetime
+
 import asyncpg
 import discord
 
@@ -92,6 +94,7 @@ async def create_listing(
     mode: str,
     slots: dict[str, int],
     size: int,
+    starts_at: datetime,
     host_character_id: str,
     host_role: str,
 ) -> asyncpg.Record:
@@ -100,12 +103,12 @@ async def create_listing(
         listing = await conn.fetchrow(
             """
             INSERT INTO lfg_listing
-                (host_id, guild_id, kind, activity, notes, mode, tanks, healers, dps, size)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                (host_id, guild_id, kind, activity, notes, mode, tanks, healers, dps, size, starts_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             host_id, guild_id, kind, activity, notes, mode,
-            slots["tank"], slots["healer"], slots["dps"], size,
+            slots["tank"], slots["healer"], slots["dps"], size, starts_at,
         )
         await _check_room(conn, listing, host_role, host_id)
         await conn.execute(
@@ -156,7 +159,7 @@ async def list_open_listings(
         SELECT l.*, (SELECT count(*) FROM lfg_signup s WHERE s.listing_id = l.listing_id) AS members
           FROM lfg_listing l
          WHERE l.guild_id = $1 AND l.status = 'open' AND ($2::text IS NULL OR l.kind = $2)
-         ORDER BY l.created_at DESC
+         ORDER BY l.starts_at ASC NULLS LAST, l.created_at DESC
          LIMIT $3
         """,
         guild_id, kind, limit,
@@ -227,6 +230,8 @@ def build_embed(listing: asyncpg.Record, signups: list[asyncpg.Record]) -> disco
         color=discord.Color.dark_grey() if closed else discord.Color.green(),
     )
     embed.add_field(name="Host", value=f"<@{_host_discord_id(listing, signups)}>", inline=True)
+    if listing["starts_at"]:
+        embed.add_field(name="Start", value=_format_start_time(listing["starts_at"]), inline=True)
     embed.add_field(
         name="Party",
         value=f"{len(signups)}/{listing['size']}"
@@ -255,3 +260,8 @@ def _host_discord_id(listing: asyncpg.Record, signups: list[asyncpg.Record]) -> 
     if "host_discord_id" in listing.keys():
         return listing["host_discord_id"]
     return next(s["discord_id"] for s in signups if s["player_id"] == listing["host_id"])
+
+
+def _format_start_time(starts_at: datetime) -> str:
+    ts = int(starts_at.timestamp())
+    return f"<t:{ts}:F> (<t:{ts}:R>)\nBe ready by start time."
