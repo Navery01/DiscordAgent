@@ -598,9 +598,11 @@ class ServerSetupAgent:
                 "stop_reason=%s blocks=%d", response.stop_reason, len(response.content)
             )
 
-            for block in response.content:
-                if block.type == "text" and block.text.strip():
-                    await self._post(f"🤖 {block.text.strip()}")
+            # The final text is returned to the caller; only post intermediate text
+            if response.stop_reason == "tool_use":
+                for block in response.content:
+                    if block.type == "text" and block.text.strip():
+                        await self._post(f"🤖 {block.text.strip()}")
 
             messages.append({"role": "assistant", "content": response.content})
 
