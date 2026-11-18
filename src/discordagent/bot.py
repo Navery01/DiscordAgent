@@ -453,11 +453,6 @@ async def lfg_create(
             ephemeral=True,
         )
         return
-    if starts_at <= datetime.now(timezone.utc):
-        await interaction.response.send_message(
-            "Start time must be in the future.", ephemeral=True
-        )
-        return
 
     if signups.value == "roles":
         slots = {"tank": tanks, "healer": healers, "dps": dps}
