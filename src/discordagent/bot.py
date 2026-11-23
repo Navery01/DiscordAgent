@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from . import auction_house, data_tools, lfg, lfg_time
 from .agent import ServerSetupAgent
 from .blizzard_api import BlizzardApiClient
+from .flip_agent import run_flip
 from .link_server import (
     Config,
     create_link_url,
@@ -827,6 +828,31 @@ async def run_task(interaction: discord.Interaction, agent: str):
         log.exception("/agent failed | guild=%s task=%r", guild.name, agent)
         await send_chunked(channel, f"❌ **Error:** {e}")
         raise
+
+
+@bot.tree.command(
+    name="flip",
+    description="Find auction house items selling far below their typical price",
+)
+@app_commands.describe(
+    focus="Optional focus, e.g. 'epic weapons under 500g' (default: best flips overall)"
+)
+async def flip(interaction: discord.Interaction, focus: str | None = None):
+    if bot.db is None:
+        await interaction.response.send_message(
+            "❌ The database isn't configured.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    log.info("/flip invoked | user=%s focus=%r", interaction.user, focus)
+    try:
+        result = await run_flip(bot.db, focus)
+    except Exception as e:
+        log.exception("/flip failed | focus=%r", focus)
+        await interaction.followup.send(f"❌ **Error:** {e}")
+        return
+    await send_chunked(interaction.followup, result)
 
 
 @bot.tree.command(
